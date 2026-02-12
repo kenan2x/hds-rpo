@@ -1,24 +1,31 @@
 const { getDb } = require('../models/database');
 const hitachiApi = require('./hitachiApi');
+const protectorApi = require('./protectorApi');
 const sessionManager = require('./sessionManager');
+const { decrypt } = require('../utils/encryption');
 
 /**
  * 3DC Pair Auto-Discovery Service
  *
- * Discovers storage systems from Ops Center, then finds all Universal Replicator
- * (UR) pairs and groups them by consistency group ID. Filters out inactive mirror
- * units (journalStatus == "SMPL") since those are not part of an active 3DC setup.
+ * Discovers storage systems and replication pairs using two complementary methods:
+ * 1. Ops Center Protector / Administrator API — for pair and replication topology discovery
+ * 2. Configuration Manager REST API — for journal-level data and direct pair queries
+ *
+ * Falls back gracefully: if Protector is not configured or returns no data,
+ * the service uses Configuration Manager's journal data to discover CGs.
  */
 
-/**
- * Retrieves the Ops Center API configuration from the database.
- *
- * @returns {{ host: string, port: number, useSsl: boolean, acceptSelfSigned: boolean } | null}
- */
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 function getApiConfig() {
   const db = getDb();
   const config = db.prepare(
-    'SELECT host, port, use_ssl, accept_self_signed FROM api_config ORDER BY id DESC LIMIT 1'
+    `SELECT host, port, use_ssl, accept_self_signed,
+            protector_port, protector_username,
+            protector_encrypted_password, protector_iv, protector_auth_tag
+     FROM api_config ORDER BY id DESC LIMIT 1`
   ).get();
 
   if (!config) return null;
@@ -28,15 +35,40 @@ function getApiConfig() {
     port: config.port,
     useSsl: !!config.use_ssl,
     acceptSelfSigned: !!config.accept_self_signed,
+    protectorPort: config.protector_port || 20964,
+    protectorUsername: config.protector_username || null,
+    protectorEncryptedPassword: config.protector_encrypted_password || null,
+    protectorIv: config.protector_iv || null,
+    protectorAuthTag: config.protector_auth_tag || null,
   };
 }
 
 /**
+ * Returns decrypted Protector credentials if configured.
+ */
+function getProtectorCredentials(apiConfig) {
+  if (!apiConfig.protectorUsername || !apiConfig.protectorEncryptedPassword) {
+    return null;
+  }
+  try {
+    const password = decrypt(
+      apiConfig.protectorEncryptedPassword,
+      apiConfig.protectorIv,
+      apiConfig.protectorAuthTag
+    );
+    return { username: apiConfig.protectorUsername, password };
+  } catch (err) {
+    console.error('[discovery] Failed to decrypt Protector credentials:', err.message);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Configuration Manager Discovery
+// ---------------------------------------------------------------------------
+
+/**
  * Discovers all storage systems registered in Ops Center.
- * This is the first step in the setup flow -- the user sees a list of
- * discovered storages and provides credentials for each.
- *
- * @returns {Promise<Array<Object>>} Array of storage system objects
  */
 async function discoverStorages() {
   const apiConfig = getApiConfig();
@@ -51,7 +83,6 @@ async function discoverStorages() {
     apiConfig.acceptSelfSigned
   );
 
-  // The API returns { data: [...] } with storage objects
   const storages = result.data || result || [];
 
   if (!Array.isArray(storages)) {
@@ -71,18 +102,11 @@ async function discoverStorages() {
 }
 
 /**
- * Discovers all Universal Replicator (UR) pairs for a storage system.
- * Uses the direct pair query endpoint (no copy group context needed).
- * Paginates through all pairs using headLdevId.
- *
- * @param {string} storageDeviceId - Storage device ID to query
- * @returns {Promise<Array<Object>>} Array of UR pair objects
+ * Discovers all UR pairs for a storage using the direct pair query endpoint.
  */
 async function discoverPairs(storageDeviceId) {
   const apiConfig = getApiConfig();
-  if (!apiConfig) {
-    throw new Error('API configuration not found.');
-  }
+  if (!apiConfig) throw new Error('API configuration not found.');
 
   const session = await sessionManager.getSession(storageDeviceId);
   const allPairs = [];
@@ -108,11 +132,9 @@ async function discoverPairs(storageDeviceId) {
       break;
     }
 
-    // Filter for Universal Replicator pairs only
     const urPairs = pairs.filter((pair) => pair.replicationType === 'UR');
     allPairs.push(...urPairs);
 
-    // Pagination: if we got a full batch, request the next page
     if (pairs.length < BATCH_SIZE) {
       hasMore = false;
     } else {
@@ -121,27 +143,16 @@ async function discoverPairs(storageDeviceId) {
     }
   }
 
-  console.log(
-    `[discovery] Found ${allPairs.length} UR pair(s) on storage ${storageDeviceId}.`
-  );
-
+  console.log(`[discovery] Found ${allPairs.length} UR pair(s) on storage ${storageDeviceId}.`);
   return allPairs;
 }
 
 /**
- * Discovers all UR pairs using the remote mirror copy groups endpoint.
- * This requires both local and remote sessions and returns richer data
- * including copy group names and full pair details.
- *
- * @param {string} localStorageId - Local storage device ID
- * @param {string} remoteStorageId - Remote storage device ID
- * @returns {Promise<Array<Object>>} Array of copy group objects with pairs
+ * Discovers UR pairs using remote mirror copy groups (requires dual tokens).
  */
 async function discoverCopyGroups(localStorageId, remoteStorageId) {
   const apiConfig = getApiConfig();
-  if (!apiConfig) {
-    throw new Error('API configuration not found.');
-  }
+  if (!apiConfig) throw new Error('API configuration not found.');
 
   const remoteSessions = await sessionManager.getRemoteSession(localStorageId, remoteStorageId);
 
@@ -163,7 +174,6 @@ async function discoverCopyGroups(localStorageId, remoteStorageId) {
     return [];
   }
 
-  // Filter copy groups to only include UR pairs
   const urCopyGroups = copyGroups
     .map((group) => ({
       ...group,
@@ -181,22 +191,61 @@ async function discoverCopyGroups(localStorageId, remoteStorageId) {
 
 /**
  * Discovers consistency groups by grouping UR pairs by consistencyGroupId.
- * Also queries journal information to enrich the data with journal status
- * and filters out inactive mirror units (SMPL status).
+ * Also queries journal information for volume counts and status data.
  *
- * @param {string} storageDeviceId
- * @returns {Promise<Array<Object>>} Array of consistency group objects
+ * KEY FIX: Uses journal `numOfLdevs` field to calculate volume count
+ * even when direct pair queries return 0 results.
  */
 async function discoverConsistencyGroups(storageDeviceId) {
   const apiConfig = getApiConfig();
-  if (!apiConfig) {
-    throw new Error('API configuration not found.');
+  if (!apiConfig) throw new Error('API configuration not found.');
+
+  // Get all UR pairs (may be empty for some configurations)
+  let pairs = [];
+  try {
+    pairs = await discoverPairs(storageDeviceId);
+  } catch (err) {
+    console.warn(
+      `[discovery] Direct pair query failed for ${storageDeviceId}: ${err.message}. ` +
+      'Will try alternative methods.'
+    );
   }
 
-  // Get all UR pairs
-  const pairs = await discoverPairs(storageDeviceId);
+  // If direct pair query returned 0, try remote-mirror-copygroups with known authenticated storages
+  if (pairs.length === 0) {
+    const db = getDb();
+    const otherStorages = db.prepare(
+      `SELECT storage_device_id FROM storage_credentials
+       WHERE is_authenticated = 1 AND storage_device_id != ?`
+    ).all(storageDeviceId).map((r) => r.storage_device_id);
 
-  // Get journal information to match journals with consistency groups
+    for (const remoteId of otherStorages) {
+      try {
+        const copyGroups = await discoverCopyGroups(storageDeviceId, remoteId);
+        for (const cg of copyGroups) {
+          for (const pair of cg.copyPairs) {
+            pairs.push({
+              ...pair,
+              copyGroupName: cg.copyGroupName,
+              remoteStorageDeviceId: remoteId,
+            });
+          }
+        }
+        if (pairs.length > 0) {
+          console.log(
+            `[discovery] Found ${pairs.length} pair(s) via copy groups ` +
+            `between ${storageDeviceId} and ${remoteId}`
+          );
+        }
+      } catch (err) {
+        console.warn(
+          `[discovery] Copy group query failed for ${storageDeviceId}→${remoteId}: ${err.message}`
+        );
+      }
+    }
+  }
+
+  // Get journal information
   const session = await sessionManager.getSession(storageDeviceId);
   let journals = [];
 
@@ -213,7 +262,7 @@ async function discoverConsistencyGroups(storageDeviceId) {
 
     const journalList = journalResult.data || journalResult || [];
     if (Array.isArray(journalList)) {
-      // Filter out inactive mirror units (SMPL = not configured/in use)
+      // Filter out inactive mirror units (SMPL = not configured)
       journals = journalList.filter((j) => j.journalStatus !== 'SMPL');
     }
   } catch (err) {
@@ -240,6 +289,8 @@ async function discoverConsistencyGroups(storageDeviceId) {
       qMarker: journal.qMarker,
       byteFormatCapacity: journal.byteFormatCapacity,
       numOfActivePaths: journal.numOfActivePaths,
+      numOfLdevs: journal.numOfLdevs || 0,
+      firstLdevId: journal.firstLdevId,
     });
   }
 
@@ -262,16 +313,29 @@ async function discoverConsistencyGroups(storageDeviceId) {
       fenceLevel: pair.fenceLevel,
       copyProgressRate: pair.copyProgressRate,
       copyGroupName: pair.copyGroupName,
+      remoteStorageDeviceId: pair.remoteStorageDeviceId,
     });
   }
 
-  // Merge all discovered consistency group IDs from both pairs and journals
+  // Merge all CG IDs from both pairs and journals
   const allCgIds = new Set([...pairsByCg.keys(), ...journalsByCg.keys()]);
 
   const consistencyGroups = [];
   for (const cgId of allCgIds) {
     const cgPairs = pairsByCg.get(cgId) || [];
     const cgJournals = journalsByCg.get(cgId) || [];
+
+    // Calculate volume count: prefer pair count, fall back to journal numOfLdevs
+    let volumeCount = cgPairs.length;
+    if (volumeCount === 0 && cgJournals.length > 0) {
+      // Sum numOfLdevs across all journals in this CG
+      volumeCount = cgJournals.reduce((sum, j) => sum + (j.numOfLdevs || 0), 0);
+      if (volumeCount > 0) {
+        console.log(
+          `[discovery] CG-${cgId}: Volume count from journal numOfLdevs: ${volumeCount}`
+        );
+      }
+    }
 
     // Determine overall status from journal statuses
     let overallStatus = 'normal';
@@ -288,7 +352,6 @@ async function discoverConsistencyGroups(storageDeviceId) {
       }
     }
 
-    // Check pair statuses for errors
     for (const pair of cgPairs) {
       const pairErrorStatuses = ['PSUE', 'SSUE'];
       const pairWarnStatuses = ['PSUS', 'SSUS', 'SSWS'];
@@ -304,9 +367,7 @@ async function discoverConsistencyGroups(storageDeviceId) {
       }
     }
 
-    // Collect unique remote storage device IDs from pairs
-    // (These come from the pair data if available; the exact remote storage ID
-    //  is known from the copy group query context rather than the direct pair query.)
+    // Collect unique remote storage device IDs
     const remoteStorageIds = new Set();
     for (const pair of cgPairs) {
       if (pair.remoteStorageDeviceId) {
@@ -317,7 +378,7 @@ async function discoverConsistencyGroups(storageDeviceId) {
     consistencyGroups.push({
       consistencyGroupId: cgId,
       overallStatus,
-      volumeCount: cgPairs.length,
+      volumeCount,
       journalCount: cgJournals.length,
       volumes: cgPairs,
       journals: cgJournals,
@@ -325,7 +386,6 @@ async function discoverConsistencyGroups(storageDeviceId) {
     });
   }
 
-  // Sort by consistency group ID
   consistencyGroups.sort((a, b) => a.consistencyGroupId - b.consistencyGroupId);
 
   console.log(
@@ -336,72 +396,169 @@ async function discoverConsistencyGroups(storageDeviceId) {
   return consistencyGroups;
 }
 
+// ---------------------------------------------------------------------------
+// Protector-based Discovery
+// ---------------------------------------------------------------------------
+
 /**
- * Saves discovered consistency groups to the database for monitoring.
- *
- * @param {string} sourceStorageId - Source (primary) storage device ID
- * @param {string} targetStorageId - Target (DR) storage device ID
- * @param {Array<Object>} groups - Consistency groups from discoverConsistencyGroups
+ * Attempts to discover replication pairs via Ops Center Protector.
+ * Returns null if Protector is not configured or discovery fails.
  */
-function saveConsistencyGroups(sourceStorageId, targetStorageId, groups) {
+async function discoverViaProtector() {
+  const apiConfig = getApiConfig();
+  if (!apiConfig) return null;
+
+  const protectorCreds = getProtectorCredentials(apiConfig);
+  if (!protectorCreds) {
+    console.log('[discovery] Protector not configured, skipping Protector discovery.');
+    return null;
+  }
+
+  try {
+    console.log('[discovery] Attempting Protector-based discovery...');
+
+    const token = await protectorApi.authenticate(
+      apiConfig.host,
+      apiConfig.protectorPort,
+      protectorCreds.username,
+      protectorCreds.password,
+      apiConfig.acceptSelfSigned
+    );
+
+    const results = await protectorApi.discoverReplication(
+      apiConfig.host,
+      apiConfig.protectorPort,
+      token,
+      apiConfig.acceptSelfSigned
+    );
+
+    console.log(
+      `[discovery] Protector discovery: method=${results.discoveryMethod}, ` +
+      `nodes=${results.nodes.length}, pairs=${results.pairs.length}, ` +
+      `copyGroups=${results.copyGroups.length}`
+    );
+
+    return results;
+  } catch (err) {
+    console.warn('[discovery] Protector discovery failed:', err.message);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Persistence
+// ---------------------------------------------------------------------------
+
+/**
+ * Saves discovered volume/pair details to the cg_volumes table.
+ */
+function saveVolumeDetails(sourceStorageId, consistencyGroupId, volumes) {
   const db = getDb();
 
-  const upsert = db.prepare(`
-    INSERT INTO consistency_groups (cg_id, name, source_storage_id, target_storage_id, is_monitored)
-    VALUES (?, ?, ?, ?, 1)
-    ON CONFLICT(cg_id, source_storage_id, target_storage_id) DO UPDATE SET
-      name = excluded.name,
-      is_monitored = 1
+  // Clear old volumes for this CG+source combination
+  db.prepare(
+    'DELETE FROM cg_volumes WHERE cg_id = ? AND source_storage_id = ?'
+  ).run(consistencyGroupId, sourceStorageId);
+
+  if (volumes.length === 0) return;
+
+  const insert = db.prepare(`
+    INSERT INTO cg_volumes (cg_id, source_storage_id, pvol_ldev_id, svol_ldev_id,
+      pvol_journal_id, svol_journal_id, pvol_status, svol_status,
+      fence_level, copy_group_name, copy_progress_rate, target_storage_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  // We need a unique constraint for the upsert. Since the table may not have
-  // a composite unique constraint, use a transaction with manual check.
-  const insertOrUpdate = db.transaction((groups) => {
+  const insertMany = db.transaction((vols) => {
+    for (const v of vols) {
+      insert.run(
+        consistencyGroupId,
+        sourceStorageId,
+        v.pvolLdevId ?? null,
+        v.svolLdevId ?? null,
+        v.pvolJournalId ?? null,
+        v.svolJournalId ?? null,
+        v.pvolStatus ?? null,
+        v.svolStatus ?? null,
+        v.fenceLevel ?? null,
+        v.copyGroupName ?? null,
+        v.copyProgressRate ?? null,
+        v.remoteStorageDeviceId ?? null
+      );
+    }
+  });
+
+  insertMany(volumes);
+}
+
+/**
+ * Saves consistency groups to the database, including volume count and details.
+ */
+function saveConsistencyGroups(sourceStorageId, groups) {
+  const db = getDb();
+
+  const saveGroup = db.transaction((groups) => {
     for (const group of groups) {
+      const targetStorageId = group.remoteStorageIds?.[0] || sourceStorageId;
+
       const existing = db.prepare(
         `SELECT id FROM consistency_groups
-         WHERE cg_id = ? AND source_storage_id = ? AND target_storage_id = ?`
-      ).get(group.consistencyGroupId, sourceStorageId, targetStorageId);
+         WHERE cg_id = ? AND source_storage_id = ?`
+      ).get(group.consistencyGroupId, sourceStorageId);
 
       if (existing) {
         db.prepare(
-          `UPDATE consistency_groups SET is_monitored = 1
+          `UPDATE consistency_groups SET
+             name = ?, target_storage_id = ?, volume_count = ?, is_monitored = 1
            WHERE id = ?`
-        ).run(existing.id);
+        ).run(
+          `CG-${group.consistencyGroupId}`,
+          targetStorageId,
+          group.volumeCount || 0,
+          existing.id
+        );
       } else {
         db.prepare(
-          `INSERT INTO consistency_groups (cg_id, name, source_storage_id, target_storage_id, is_monitored)
-           VALUES (?, ?, ?, ?, 1)`
+          `INSERT INTO consistency_groups (cg_id, name, source_storage_id, target_storage_id, volume_count, is_monitored)
+           VALUES (?, ?, ?, ?, ?, 1)`
         ).run(
           group.consistencyGroupId,
           `CG-${group.consistencyGroupId}`,
           sourceStorageId,
-          targetStorageId
+          targetStorageId,
+          group.volumeCount || 0
         );
+      }
+
+      // Save volume/pair details
+      if (group.volumes && group.volumes.length > 0) {
+        saveVolumeDetails(sourceStorageId, group.consistencyGroupId, group.volumes);
       }
     }
   });
 
-  insertOrUpdate(groups);
+  saveGroup(groups);
 
   console.log(
-    `[discovery] Saved ${groups.length} consistency group(s) for ` +
-    `${sourceStorageId} -> ${targetStorageId}.`
+    `[discovery] Saved ${groups.length} consistency group(s) for ${sourceStorageId}.`
   );
 }
 
+// ---------------------------------------------------------------------------
+// Full Discovery Orchestration
+// ---------------------------------------------------------------------------
+
 /**
- * Runs full discovery: lists storages, finds all UR pairs and consistency groups
- * for each authenticated storage. Returns a complete overview of the 3DC environment.
- *
- * @returns {Promise<Object>} Complete discovery results
+ * Runs full discovery:
+ * 1. Try Protector-based discovery first (if configured)
+ * 2. Then run Configuration Manager discovery for each authenticated storage
+ * 3. Merge results and save to database
  */
 async function runFullDiscovery() {
   console.log('[discovery] Starting full 3DC environment discovery...');
 
   const storages = await discoverStorages();
 
-  // Get list of authenticated storages from the database
   const db = getDb();
   const authenticatedStorages = db.prepare(
     'SELECT storage_device_id FROM storage_credentials WHERE is_authenticated = 1'
@@ -411,14 +568,31 @@ async function runFullDiscovery() {
     storages,
     authenticatedCount: authenticatedStorages.length,
     consistencyGroups: {},
+    protectorResults: null,
     errors: [],
   };
 
-  // Discover consistency groups for each authenticated storage
+  // Step 1: Try Protector discovery
+  const protectorData = await discoverViaProtector();
+  if (protectorData) {
+    results.protectorResults = {
+      discoveryMethod: protectorData.discoveryMethod,
+      nodesFound: protectorData.nodes.length,
+      pairsFound: protectorData.pairs.length,
+      copyGroupsFound: protectorData.copyGroups.length,
+    };
+  }
+
+  // Step 2: Run Configuration Manager discovery for each authenticated storage
   for (const storageId of authenticatedStorages) {
     try {
       const groups = await discoverConsistencyGroups(storageId);
       results.consistencyGroups[storageId] = groups;
+
+      // Save to database
+      if (groups.length > 0) {
+        saveConsistencyGroups(storageId, groups);
+      }
     } catch (err) {
       console.error(
         `[discovery] Failed to discover CGs for storage ${storageId}: ${err.message}`
@@ -446,6 +620,8 @@ module.exports = {
   discoverPairs,
   discoverCopyGroups,
   discoverConsistencyGroups,
+  discoverViaProtector,
   saveConsistencyGroups,
+  saveVolumeDetails,
   runFullDiscovery,
 };

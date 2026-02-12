@@ -77,10 +77,10 @@ router.get('/groups', (_req, res) => {
     const db = getDb();
     const thresholds = getRpoThresholds();
 
-    // Get all consistency groups
+    // Get all consistency groups (including volume_count from discovery)
     const groups = db.prepare(
       `SELECT cg.id, cg.cg_id, cg.name, cg.source_storage_id, cg.target_storage_id,
-              cg.is_monitored, cg.created_at
+              cg.is_monitored, cg.volume_count, cg.created_at
        FROM consistency_groups cg
        ORDER BY cg.cg_id`
     ).all();
@@ -105,18 +105,20 @@ router.get('/groups', (_req, res) => {
        GROUP BY cg_id`
     );
 
-    const getVolumeCount = db.prepare(
-      `SELECT COUNT(DISTINCT journal_id) as volume_count
-       FROM rpo_history
-       WHERE cg_id = ?
-         AND timestamp = (
-           SELECT MAX(timestamp) FROM rpo_history WHERE cg_id = ?
-         )`
+    // Count volumes from cg_volumes table (populated during discovery) as fallback
+    const getVolumeCountFromDiscovery = db.prepare(
+      `SELECT COUNT(*) as volume_count FROM cg_volumes WHERE cg_id = ?`
     );
 
     const result = groups.map((group) => {
       const latestRpo = getLatestRpo.get(group.cg_id, group.cg_id);
-      const volumeInfo = getVolumeCount.get(group.cg_id, group.cg_id);
+
+      // Volume count: prefer the stored value from discovery, fall back to cg_volumes table, then rpo_history
+      let volumeCount = group.volume_count || 0;
+      if (volumeCount === 0) {
+        const discoveryVolumes = getVolumeCountFromDiscovery.get(group.cg_id);
+        volumeCount = discoveryVolumes?.volume_count || 0;
+      }
 
       const usageRate = latestRpo?.usage_rate ?? null;
       const severity = usageRate !== null
@@ -130,7 +132,7 @@ router.get('/groups', (_req, res) => {
         source_storage_id: group.source_storage_id,
         target_storage_id: group.target_storage_id,
         is_monitored: !!group.is_monitored,
-        volume_count: volumeInfo?.volume_count || 0,
+        volume_count: volumeCount,
         latest_rpo: latestRpo
           ? {
               usage_rate: latestRpo.usage_rate,
@@ -333,8 +335,8 @@ router.get('/groups/:cgId/volumes', (req, res) => {
       return res.status(404).json({ error: 'Tutarlılık grubu bulunamadı.' });
     }
 
-    // Get the latest data for each volume (journal_id + mu_number) in this group
-    const volumes = db.prepare(`
+    // Get the latest data from rpo_history (populated by poller)
+    const rpoVolumes = db.prepare(`
       SELECT
         journal_id,
         mu_number,
@@ -356,11 +358,33 @@ router.get('/groups/:cgId/volumes', (req, res) => {
       ORDER BY journal_id, mu_number
     `).all(cgIdNum, cgIdNum);
 
+    // If no rpo_history data yet, return discovered volumes from cg_volumes table
+    if (rpoVolumes.length === 0) {
+      const discoveredVolumes = db.prepare(`
+        SELECT
+          pvol_ldev_id, svol_ldev_id, pvol_journal_id, svol_journal_id,
+          pvol_status, svol_status, fence_level, copy_group_name,
+          copy_progress_rate, target_storage_id, source_storage_id, discovered_at
+        FROM cg_volumes
+        WHERE cg_id = ?
+        ORDER BY pvol_ldev_id
+      `).all(cgIdNum);
+
+      return res.json({
+        cg_id: cgIdNum,
+        volume_count: discoveredVolumes.length,
+        timestamp: discoveredVolumes.length > 0 ? discoveredVolumes[0].discovered_at : null,
+        source: 'discovery',
+        volumes: discoveredVolumes,
+      });
+    }
+
     res.json({
       cg_id: cgIdNum,
-      volume_count: volumes.length,
-      timestamp: volumes.length > 0 ? volumes[0].timestamp : null,
-      volumes,
+      volume_count: rpoVolumes.length,
+      timestamp: rpoVolumes[0].timestamp,
+      source: 'polling',
+      volumes: rpoVolumes,
     });
   } catch (err) {
     console.error('[monitoring] Get volumes error:', err.message);
@@ -559,50 +583,24 @@ router.post('/discover', async (_req, res) => {
   try {
     const discovery = require('../services/discovery');
 
-    // Run full discovery across all authenticated storages
+    // Run full discovery (now saves to DB automatically)
     const results = await discovery.runFullDiscovery();
 
-    // Save discovered consistency groups to the database
-    const db = getDb();
-    let totalSaved = 0;
-
-    for (const [storageId, groups] of Object.entries(results.consistencyGroups)) {
-      if (groups.length === 0) continue;
-
-      for (const group of groups) {
-        // Determine target storage from pair data or use the same storage
-        const targetStorageId = group.remoteStorageIds?.[0] || storageId;
-
-        const existing = db.prepare(
-          `SELECT id FROM consistency_groups
-           WHERE cg_id = ? AND source_storage_id = ?`
-        ).get(group.consistencyGroupId, storageId);
-
-        if (existing) {
-          db.prepare(
-            `UPDATE consistency_groups SET
-               name = ?, target_storage_id = ?, is_monitored = 1
-             WHERE id = ?`
-          ).run(`CG-${group.consistencyGroupId}`, targetStorageId, existing.id);
-        } else {
-          db.prepare(
-            `INSERT INTO consistency_groups (cg_id, name, source_storage_id, target_storage_id, is_monitored)
-             VALUES (?, ?, ?, ?, 1)`
-          ).run(group.consistencyGroupId, `CG-${group.consistencyGroupId}`, storageId, targetStorageId);
-        }
-        totalSaved++;
-      }
-    }
+    const totalCgs = Object.values(results.consistencyGroups)
+      .reduce((sum, groups) => sum + groups.length, 0);
 
     // Return the saved groups from the database
+    const db = getDb();
     const groups = db.prepare(
-      `SELECT id, cg_id, name, source_storage_id, target_storage_id, is_monitored, created_at
+      `SELECT id, cg_id, name, source_storage_id, target_storage_id,
+              volume_count, is_monitored, created_at
        FROM consistency_groups ORDER BY cg_id`
     ).all();
 
     res.json({
-      message: `${totalSaved} tutarlılık grubu keşfedildi ve kaydedildi.`,
+      message: `${totalCgs} tutarlılık grubu keşfedildi ve kaydedildi.`,
       groups,
+      protector_results: results.protectorResults,
       discovery_errors: results.errors,
     });
   } catch (err) {

@@ -94,7 +94,7 @@ export default function Setup() {
   );
 }
 
-// --- Step 1: API Configuration ---
+// --- Step 1: API Configuration (Config Manager + Protector) ---
 function Step1ApiConfig({ onNext }) {
   const [host, setHost] = useState('');
   const [port, setPort] = useState('23451');
@@ -105,20 +105,38 @@ function Step1ApiConfig({ onNext }) {
   const [testResult, setTestResult] = useState(null);
   const [error, setError] = useState('');
 
+  // Protector config
+  const [protectorPort, setProtectorPort] = useState('20964');
+  const [protectorUsername, setProtectorUsername] = useState('');
+  const [protectorPassword, setProtectorPassword] = useState('');
+  const [showProtectorPw, setShowProtectorPw] = useState(false);
+  const [protectorTesting, setProtectorTesting] = useState(false);
+  const [protectorTestResult, setProtectorTestResult] = useState(null);
+  const [protectorConfigured, setProtectorConfigured] = useState(false);
+
   // Load existing config
   useEffect(() => {
     const loadConfig = async () => {
       try {
-        const res = await axios.get('/api/config');
-        const config = res.data?.config;
+        const [configRes, protectorRes] = await Promise.all([
+          axios.get('/api/config'),
+          axios.get('/api/config/protector').catch(() => ({ data: {} })),
+        ]);
+        const config = configRes.data?.config;
         if (config) {
           setHost(config.host || '');
           setPort(String(config.port || '23451'));
           setSsl(config.use_ssl !== 0);
           setAcceptSelfSigned(!!config.accept_self_signed);
         }
+        const pConfig = protectorRes.data?.protector;
+        if (pConfig) {
+          setProtectorPort(String(pConfig.port || '20964'));
+          if (pConfig.username) setProtectorUsername(pConfig.username);
+          if (pConfig.is_configured) setProtectorConfigured(true);
+        }
       } catch {
-        // No config yet, use defaults
+        // No config yet
       }
     };
     loadConfig();
@@ -146,16 +164,51 @@ function Step1ApiConfig({ onNext }) {
     }
   };
 
+  const handleProtectorTest = async () => {
+    setProtectorTesting(true);
+    setProtectorTestResult(null);
+    try {
+      const res = await axios.post('/api/config/protector/test', {
+        port: parseInt(protectorPort, 10),
+        username: protectorUsername,
+        password: protectorPassword,
+      });
+      setProtectorTestResult({
+        success: true,
+        message: res.data.message || 'Protector baglantisi basarili!',
+        details: res.data.details,
+      });
+    } catch (err) {
+      setProtectorTestResult({
+        success: false,
+        message: err.response?.data?.error || 'Protector baglantisi basarisiz.',
+      });
+    } finally {
+      setProtectorTesting(false);
+    }
+  };
+
   const handleSave = async () => {
     setSaving(true);
     setError('');
     try {
+      // Save Config Manager settings
       await axios.post('/api/config', {
         host,
         port: parseInt(port, 10),
         use_ssl: ssl,
         accept_self_signed: acceptSelfSigned,
       });
+
+      // Save Protector settings if provided
+      if (protectorUsername && protectorPassword) {
+        await axios.post('/api/config/protector', {
+          port: parseInt(protectorPort, 10),
+          username: protectorUsername,
+          password: protectorPassword,
+        });
+      }
+
       onNext();
     } catch (err) {
       setError(err.response?.data?.error || 'Yapilandirma kaydedilemedi.');
@@ -165,94 +218,88 @@ function Step1ApiConfig({ onNext }) {
   };
 
   return (
-    <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-lg p-6">
-      <h2 className="text-lg font-semibold text-white mb-1">Ops Center API Baglantisi</h2>
-      <p className="text-slate-400 text-sm mb-6">
-        Hitachi Ops Center Configuration Manager API adresini girin.
-      </p>
+    <div className="space-y-6">
+      {/* Configuration Manager */}
+      <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-lg p-6">
+        <h2 className="text-lg font-semibold text-white mb-1">Ops Center Configuration Manager</h2>
+        <p className="text-slate-400 text-sm mb-6">
+          Hitachi Ops Center Configuration Manager API baglanti bilgilerini girin.
+        </p>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-        <div>
-          <label className="block text-sm font-medium text-slate-300 mb-1.5">
-            Ana Bilgisayar / IP Adresi
-          </label>
-          <input
-            type="text"
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-            placeholder="192.168.1.100"
-            className="w-full px-4 py-2.5 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-slate-300 mb-1.5">
-            Port
-          </label>
-          <input
-            type="number"
-            value={port}
-            onChange={(e) => setPort(e.target.value)}
-            placeholder="23451"
-            className="w-full px-4 py-2.5 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-      </div>
-
-      <div className="flex flex-wrap gap-6 mb-6">
-        <button
-          type="button"
-          onClick={() => setSsl(!ssl)}
-          className="flex items-center gap-2 text-sm text-slate-300 hover:text-white transition-colors"
-        >
-          {ssl ? (
-            <ToggleRight className="w-6 h-6 text-blue-400" />
-          ) : (
-            <ToggleLeft className="w-6 h-6 text-slate-500" />
-          )}
-          <Shield className="w-4 h-4" />
-          SSL / HTTPS
-        </button>
-        <button
-          type="button"
-          onClick={() => setAcceptSelfSigned(!acceptSelfSigned)}
-          className="flex items-center gap-2 text-sm text-slate-300 hover:text-white transition-colors"
-        >
-          {acceptSelfSigned ? (
-            <ToggleRight className="w-6 h-6 text-yellow-400" />
-          ) : (
-            <ToggleLeft className="w-6 h-6 text-slate-500" />
-          )}
-          Kendinden Imzali Sertifika Kabul Et
-        </button>
-      </div>
-
-      {/* Test result */}
-      {testResult && (
-        <div
-          className={`mb-4 p-3 rounded-lg border ${
-            testResult.success
-              ? 'bg-green-500/10 border-green-500/30 text-green-400'
-              : 'bg-red-500/10 border-red-500/30 text-red-400'
-          }`}
-        >
-          <div className="flex items-center gap-2">
-            {testResult.success ? (
-              <CheckCircle2 className="w-5 h-5" />
-            ) : (
-              <XCircle className="w-5 h-5" />
-            )}
-            <span className="text-sm">{testResult.message}</span>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">
+              Ana Bilgisayar / IP Adresi
+            </label>
+            <input
+              type="text"
+              value={host}
+              onChange={(e) => setHost(e.target.value)}
+              placeholder="192.168.1.100"
+              className="w-full px-4 py-2.5 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">
+              Port
+            </label>
+            <input
+              type="number"
+              value={port}
+              onChange={(e) => setPort(e.target.value)}
+              placeholder="23451"
+              className="w-full px-4 py-2.5 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
           </div>
         </div>
-      )}
 
-      {error && (
-        <div className="mb-4 p-3 rounded-lg border bg-red-500/10 border-red-500/30 text-red-400">
-          <span className="text-sm">{error}</span>
+        <div className="flex flex-wrap gap-6 mb-6">
+          <button
+            type="button"
+            onClick={() => setSsl(!ssl)}
+            className="flex items-center gap-2 text-sm text-slate-300 hover:text-white transition-colors"
+          >
+            {ssl ? (
+              <ToggleRight className="w-6 h-6 text-blue-400" />
+            ) : (
+              <ToggleLeft className="w-6 h-6 text-slate-500" />
+            )}
+            <Shield className="w-4 h-4" />
+            SSL / HTTPS
+          </button>
+          <button
+            type="button"
+            onClick={() => setAcceptSelfSigned(!acceptSelfSigned)}
+            className="flex items-center gap-2 text-sm text-slate-300 hover:text-white transition-colors"
+          >
+            {acceptSelfSigned ? (
+              <ToggleRight className="w-6 h-6 text-yellow-400" />
+            ) : (
+              <ToggleLeft className="w-6 h-6 text-slate-500" />
+            )}
+            Kendinden Imzali Sertifika Kabul Et
+          </button>
         </div>
-      )}
 
-      <div className="flex justify-between">
+        {testResult && (
+          <div
+            className={`mb-4 p-3 rounded-lg border ${
+              testResult.success
+                ? 'bg-green-500/10 border-green-500/30 text-green-400'
+                : 'bg-red-500/10 border-red-500/30 text-red-400'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              {testResult.success ? (
+                <CheckCircle2 className="w-5 h-5" />
+              ) : (
+                <XCircle className="w-5 h-5" />
+              )}
+              <span className="text-sm">{testResult.message}</span>
+            </div>
+          </div>
+        )}
+
         <button
           onClick={handleTest}
           disabled={testing || !host}
@@ -265,6 +312,126 @@ function Step1ApiConfig({ onNext }) {
           )}
           Baglantiyi Test Et
         </button>
+      </div>
+
+      {/* Protector / Common Services */}
+      <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-lg p-6">
+        <div className="flex items-center gap-3 mb-1">
+          <h2 className="text-lg font-semibold text-white">Ops Center Protector</h2>
+          <span className="text-xs bg-yellow-500/20 text-yellow-400 px-2 py-0.5 rounded">
+            Opsiyonel
+          </span>
+          {protectorConfigured && (
+            <CheckCircle2 className="w-5 h-5 text-green-500" />
+          )}
+        </div>
+        <p className="text-slate-400 text-sm mb-6">
+          Replikasyon ciftlerinin otomatik kesfedilmesi icin Ops Center Protector (Common Services) bilgilerini girin.
+          Ayni sunucu uzerinde calisir, sadece port ve kimlik bilgileri gereklidir.
+        </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">
+              Protector Port
+            </label>
+            <input
+              type="number"
+              value={protectorPort}
+              onChange={(e) => setProtectorPort(e.target.value)}
+              placeholder="20964"
+              className="w-full px-4 py-2.5 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">
+              Kullanici Adi
+            </label>
+            <input
+              type="text"
+              value={protectorUsername}
+              onChange={(e) => setProtectorUsername(e.target.value)}
+              placeholder="admin"
+              className="w-full px-4 py-2.5 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">
+              Sifre
+            </label>
+            <div className="relative">
+              <input
+                type={showProtectorPw ? 'text' : 'password'}
+                value={protectorPassword}
+                onChange={(e) => setProtectorPassword(e.target.value)}
+                placeholder="********"
+                className="w-full px-4 py-2.5 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 pr-10"
+              />
+              <button
+                type="button"
+                onClick={() => setShowProtectorPw(!showProtectorPw)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+              >
+                {showProtectorPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {protectorTestResult && (
+          <div
+            className={`mb-4 p-3 rounded-lg border ${
+              protectorTestResult.success
+                ? 'bg-green-500/10 border-green-500/30 text-green-400'
+                : 'bg-red-500/10 border-red-500/30 text-red-400'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              {protectorTestResult.success ? (
+                <CheckCircle2 className="w-5 h-5" />
+              ) : (
+                <XCircle className="w-5 h-5" />
+              )}
+              <span className="text-sm">{protectorTestResult.message}</span>
+            </div>
+            {protectorTestResult.details && protectorTestResult.success && (
+              <div className="mt-2 text-xs text-slate-400">
+                {protectorTestResult.details.discoveryMethod && (
+                  <span>Kesif yontemi: {protectorTestResult.details.discoveryMethod}</span>
+                )}
+                {protectorTestResult.details.nodesFound > 0 && (
+                  <span className="ml-3">{protectorTestResult.details.nodesFound} node bulundu</span>
+                )}
+                {protectorTestResult.details.pairsFound > 0 && (
+                  <span className="ml-3">{protectorTestResult.details.pairsFound} cift bulundu</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        <button
+          onClick={handleProtectorTest}
+          disabled={protectorTesting || !protectorUsername || !protectorPassword}
+          className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-lg transition-colors"
+        >
+          {protectorTesting ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Wifi className="w-4 h-4" />
+          )}
+          Protector Baglantisini Test Et
+        </button>
+      </div>
+
+      {/* Error and navigation */}
+      {error && (
+        <div className="p-3 rounded-lg border bg-red-500/10 border-red-500/30 text-red-400">
+          <span className="text-sm">{error}</span>
+        </div>
+      )}
+
+      <div className="flex justify-end">
         <button
           onClick={handleSave}
           disabled={saving || !host}

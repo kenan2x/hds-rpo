@@ -125,6 +125,23 @@ function createTables() {
       value TEXT,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS cg_volumes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cg_id INTEGER NOT NULL,
+      source_storage_id TEXT NOT NULL,
+      pvol_ldev_id INTEGER,
+      svol_ldev_id INTEGER,
+      pvol_journal_id INTEGER,
+      svol_journal_id INTEGER,
+      pvol_status TEXT,
+      svol_status TEXT,
+      fence_level TEXT,
+      copy_group_name TEXT,
+      copy_progress_rate INTEGER,
+      target_storage_id TEXT,
+      discovered_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   // Create indexes for frequently queried columns
@@ -135,7 +152,21 @@ function createTables() {
     CREATE INDEX IF NOT EXISTS idx_alerts_cg_id ON alerts(cg_id);
     CREATE INDEX IF NOT EXISTS idx_alerts_created_at ON alerts(created_at);
     CREATE INDEX IF NOT EXISTS idx_settings_key ON settings(key);
+    CREATE INDEX IF NOT EXISTS idx_cg_volumes_cg_id ON cg_volumes(cg_id);
   `);
+
+  // Add columns to existing tables if they don't exist (migration)
+  const migrations = [
+    'ALTER TABLE consistency_groups ADD COLUMN volume_count INTEGER DEFAULT 0',
+    'ALTER TABLE api_config ADD COLUMN protector_port INTEGER DEFAULT 20964',
+    'ALTER TABLE api_config ADD COLUMN protector_username TEXT',
+    'ALTER TABLE api_config ADD COLUMN protector_encrypted_password TEXT',
+    'ALTER TABLE api_config ADD COLUMN protector_iv TEXT',
+    'ALTER TABLE api_config ADD COLUMN protector_auth_tag TEXT',
+  ];
+  for (const sql of migrations) {
+    try { db.exec(sql); } catch (_e) { /* column already exists */ }
+  }
 }
 
 /**

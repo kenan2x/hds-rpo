@@ -3,6 +3,8 @@ const axios = require('axios');
 const https = require('https');
 const { getDb } = require('../models/database');
 const { authenticateToken } = require('./auth');
+const { encrypt } = require('../utils/encryption');
+const protectorApi = require('../services/protectorApi');
 
 const router = express.Router();
 
@@ -198,6 +200,145 @@ router.put('/settings', (req, res) => {
   } catch (err) {
     console.error('[config] Update settings error:', err.message);
     res.status(500).json({ error: 'Ayarlar güncellenirken bir hata oluştu.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Protector Configuration
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/config/protector
+ * Retrieve the Protector configuration (port, username — never the password).
+ */
+router.get('/protector', (_req, res) => {
+  try {
+    const db = getDb();
+    const config = db.prepare(
+      'SELECT protector_port, protector_username FROM api_config ORDER BY id DESC LIMIT 1'
+    ).get();
+
+    res.json({
+      protector: config
+        ? {
+            port: config.protector_port || 20964,
+            username: config.protector_username || null,
+            is_configured: !!config.protector_username,
+          }
+        : null,
+    });
+  } catch (err) {
+    console.error('[config] Get protector config error:', err.message);
+    res.status(500).json({ error: 'Protector yapılandırması alınırken bir hata oluştu.' });
+  }
+});
+
+/**
+ * POST /api/config/protector
+ * Save or update Protector configuration (port, username, password).
+ * The password is encrypted before storage.
+ */
+router.post('/protector', (req, res) => {
+  try {
+    const { port = 20964, username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Protector kullanıcı adı ve şifresi gereklidir.' });
+    }
+
+    const portNum = parseInt(port, 10);
+    if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
+      return res.status(400).json({ error: 'Geçersiz port numarası.' });
+    }
+
+    const db = getDb();
+    const existing = db.prepare('SELECT id FROM api_config ORDER BY id DESC LIMIT 1').get();
+
+    if (!existing) {
+      return res.status(400).json({
+        error: 'Önce Ops Center API yapılandırmasını kaydedin.',
+      });
+    }
+
+    // Encrypt the password
+    const { encrypted, iv, authTag } = encrypt(password);
+
+    db.prepare(
+      `UPDATE api_config SET
+         protector_port = ?,
+         protector_username = ?,
+         protector_encrypted_password = ?,
+         protector_iv = ?,
+         protector_auth_tag = ?,
+         updated_at = datetime('now')
+       WHERE id = ?`
+    ).run(portNum, username, encrypted, iv, authTag, existing.id);
+
+    res.json({
+      message: 'Protector yapılandırması kaydedildi.',
+      protector: {
+        port: portNum,
+        username,
+        is_configured: true,
+      },
+    });
+  } catch (err) {
+    console.error('[config] Save protector config error:', err.message);
+    res.status(500).json({ error: 'Protector yapılandırması kaydedilirken bir hata oluştu.' });
+  }
+});
+
+/**
+ * POST /api/config/protector/test
+ * Test connection to Ops Center Protector via Common Services authentication.
+ */
+router.post('/protector/test', async (req, res) => {
+  try {
+    const db = getDb();
+    const apiConfig = db.prepare(
+      'SELECT host, accept_self_signed FROM api_config ORDER BY id DESC LIMIT 1'
+    ).get();
+
+    if (!apiConfig) {
+      return res.status(400).json({ error: 'Önce Ops Center API yapılandırmasını kaydedin.' });
+    }
+
+    const port = parseInt(req.body.port || '20964', 10);
+    const username = req.body.username;
+    const password = req.body.password;
+
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Kullanıcı adı ve şifre gereklidir.' });
+    }
+
+    const result = await protectorApi.testConnection(
+      apiConfig.host,
+      port,
+      username,
+      password,
+      !!apiConfig.accept_self_signed
+    );
+
+    if (result.success) {
+      res.json({
+        success: true,
+        message: 'Protector bağlantısı başarılı.',
+        details: result,
+      });
+    } else {
+      res.status(401).json({
+        success: false,
+        error: `Protector bağlantısı başarısız: ${result.error}`,
+        details: result,
+      });
+    }
+  } catch (err) {
+    console.error('[config] Protector test error:', err.message);
+    res.status(502).json({
+      success: false,
+      error: 'Protector bağlantı testi sırasında bir hata oluştu.',
+      details: err.message,
+    });
   }
 });
 
