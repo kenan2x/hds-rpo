@@ -548,4 +548,70 @@ router.patch('/groups/:cgId', (req, res) => {
   }
 });
 
+/**
+ * POST /api/monitoring/discover
+ * Trigger full 3DC consistency group discovery.
+ * Discovers UR pairs on all authenticated storages, groups them by CG,
+ * and saves results to the database. This is the bridge between storage
+ * authentication and the monitoring dashboard.
+ */
+router.post('/discover', async (_req, res) => {
+  try {
+    const discovery = require('../services/discovery');
+
+    // Run full discovery across all authenticated storages
+    const results = await discovery.runFullDiscovery();
+
+    // Save discovered consistency groups to the database
+    const db = getDb();
+    let totalSaved = 0;
+
+    for (const [storageId, groups] of Object.entries(results.consistencyGroups)) {
+      if (groups.length === 0) continue;
+
+      for (const group of groups) {
+        // Determine target storage from pair data or use the same storage
+        const targetStorageId = group.remoteStorageIds?.[0] || storageId;
+
+        const existing = db.prepare(
+          `SELECT id FROM consistency_groups
+           WHERE cg_id = ? AND source_storage_id = ?`
+        ).get(group.consistencyGroupId, storageId);
+
+        if (existing) {
+          db.prepare(
+            `UPDATE consistency_groups SET
+               name = ?, target_storage_id = ?, is_monitored = 1
+             WHERE id = ?`
+          ).run(`CG-${group.consistencyGroupId}`, targetStorageId, existing.id);
+        } else {
+          db.prepare(
+            `INSERT INTO consistency_groups (cg_id, name, source_storage_id, target_storage_id, is_monitored)
+             VALUES (?, ?, ?, ?, 1)`
+          ).run(group.consistencyGroupId, `CG-${group.consistencyGroupId}`, storageId, targetStorageId);
+        }
+        totalSaved++;
+      }
+    }
+
+    // Return the saved groups from the database
+    const groups = db.prepare(
+      `SELECT id, cg_id, name, source_storage_id, target_storage_id, is_monitored, created_at
+       FROM consistency_groups ORDER BY cg_id`
+    ).all();
+
+    res.json({
+      message: `${totalSaved} tutarlılık grubu keşfedildi ve kaydedildi.`,
+      groups,
+      discovery_errors: results.errors,
+    });
+  } catch (err) {
+    console.error('[monitoring] Discovery error:', err.message);
+    res.status(500).json({
+      error: 'Tutarlılık grubu keşfi sırasında bir hata oluştu.',
+      details: err.message,
+    });
+  }
+});
+
 module.exports = router;

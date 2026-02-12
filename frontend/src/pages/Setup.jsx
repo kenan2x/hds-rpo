@@ -510,6 +510,8 @@ function Step3ConsistencyGroups({ onBack, onFinish }) {
     setLoading(true);
     setError('');
     try {
+      // Trigger actual discovery from Hitachi API, then fetch results
+      await axios.post('/api/monitoring/discover');
       const res = await axios.get('/api/monitoring/groups');
       const discovered = res.data.groups || [];
       setGroups(discovered);
