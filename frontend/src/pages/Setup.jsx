@@ -106,6 +106,7 @@ function Step1ApiConfig({ onNext }) {
   const [error, setError] = useState('');
 
   // Protector config
+  const [protectorHost, setProtectorHost] = useState('');
   const [protectorPort, setProtectorPort] = useState('20964');
   const [protectorUsername, setProtectorUsername] = useState('');
   const [protectorPassword, setProtectorPassword] = useState('');
@@ -131,6 +132,7 @@ function Step1ApiConfig({ onNext }) {
         }
         const pConfig = protectorRes.data?.protector;
         if (pConfig) {
+          if (pConfig.host) setProtectorHost(pConfig.host);
           setProtectorPort(String(pConfig.port || '20964'));
           if (pConfig.username) setProtectorUsername(pConfig.username);
           if (pConfig.is_configured) setProtectorConfigured(true);
@@ -169,6 +171,7 @@ function Step1ApiConfig({ onNext }) {
     setProtectorTestResult(null);
     try {
       const res = await axios.post('/api/config/protector/test', {
+        host: protectorHost,
         port: parseInt(protectorPort, 10),
         username: protectorUsername,
         password: protectorPassword,
@@ -201,8 +204,9 @@ function Step1ApiConfig({ onNext }) {
       });
 
       // Save Protector settings if provided
-      if (protectorUsername && protectorPassword) {
+      if (protectorHost && protectorUsername && protectorPassword) {
         await axios.post('/api/config/protector', {
+          host: protectorHost,
           port: parseInt(protectorPort, 10),
           username: protectorUsername,
           password: protectorPassword,
@@ -327,10 +331,22 @@ function Step1ApiConfig({ onNext }) {
         </div>
         <p className="text-slate-400 text-sm mb-6">
           Replikasyon ciftlerinin otomatik kesfedilmesi icin Ops Center Protector (Common Services) bilgilerini girin.
-          Ayni sunucu uzerinde calisir, sadece port ve kimlik bilgileri gereklidir.
+          Protector farkli bir sunucuda calisiyor olabilir.
         </p>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">
+              Protector Host / IP Adresi
+            </label>
+            <input
+              type="text"
+              value={protectorHost}
+              onChange={(e) => setProtectorHost(e.target.value)}
+              placeholder="10.0.0.50"
+              className="w-full px-4 py-2.5 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
           <div>
             <label className="block text-sm font-medium text-slate-300 mb-1.5">
               Protector Port
@@ -343,6 +359,9 @@ function Step1ApiConfig({ onNext }) {
               className="w-full px-4 py-2.5 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
           <div>
             <label className="block text-sm font-medium text-slate-300 mb-1.5">
               Kullanici Adi
@@ -412,7 +431,7 @@ function Step1ApiConfig({ onNext }) {
 
         <button
           onClick={handleProtectorTest}
-          disabled={protectorTesting || !protectorUsername || !protectorPassword}
+          disabled={protectorTesting || !protectorHost || !protectorUsername || !protectorPassword}
           className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-lg transition-colors"
         >
           {protectorTesting ? (

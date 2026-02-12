@@ -158,6 +158,7 @@ function createTables() {
   // Add columns to existing tables if they don't exist (migration)
   const migrations = [
     'ALTER TABLE consistency_groups ADD COLUMN volume_count INTEGER DEFAULT 0',
+    'ALTER TABLE api_config ADD COLUMN protector_host TEXT',
     'ALTER TABLE api_config ADD COLUMN protector_port INTEGER DEFAULT 20964',
     'ALTER TABLE api_config ADD COLUMN protector_username TEXT',
     'ALTER TABLE api_config ADD COLUMN protector_encrypted_password TEXT',

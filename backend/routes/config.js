@@ -215,15 +215,16 @@ router.get('/protector', (_req, res) => {
   try {
     const db = getDb();
     const config = db.prepare(
-      'SELECT protector_port, protector_username FROM api_config ORDER BY id DESC LIMIT 1'
+      'SELECT protector_host, protector_port, protector_username FROM api_config ORDER BY id DESC LIMIT 1'
     ).get();
 
     res.json({
       protector: config
         ? {
+            host: config.protector_host || null,
             port: config.protector_port || 20964,
             username: config.protector_username || null,
-            is_configured: !!config.protector_username,
+            is_configured: !!(config.protector_host && config.protector_username),
           }
         : null,
     });
@@ -240,10 +241,10 @@ router.get('/protector', (_req, res) => {
  */
 router.post('/protector', (req, res) => {
   try {
-    const { port = 20964, username, password } = req.body;
+    const { host, port = 20964, username, password } = req.body;
 
-    if (!username || !password) {
-      return res.status(400).json({ error: 'Protector kullanıcı adı ve şifresi gereklidir.' });
+    if (!host || !username || !password) {
+      return res.status(400).json({ error: 'Protector host, kullanıcı adı ve şifresi gereklidir.' });
     }
 
     const portNum = parseInt(port, 10);
@@ -265,6 +266,7 @@ router.post('/protector', (req, res) => {
 
     db.prepare(
       `UPDATE api_config SET
+         protector_host = ?,
          protector_port = ?,
          protector_username = ?,
          protector_encrypted_password = ?,
@@ -272,11 +274,12 @@ router.post('/protector', (req, res) => {
          protector_auth_tag = ?,
          updated_at = datetime('now')
        WHERE id = ?`
-    ).run(portNum, username, encrypted, iv, authTag, existing.id);
+    ).run(host, portNum, username, encrypted, iv, authTag, existing.id);
 
     res.json({
       message: 'Protector yapılandırması kaydedildi.',
       protector: {
+        host,
         port: portNum,
         username,
         is_configured: true,
@@ -296,27 +299,27 @@ router.post('/protector/test', async (req, res) => {
   try {
     const db = getDb();
     const apiConfig = db.prepare(
-      'SELECT host, accept_self_signed FROM api_config ORDER BY id DESC LIMIT 1'
+      'SELECT accept_self_signed FROM api_config ORDER BY id DESC LIMIT 1'
     ).get();
 
-    if (!apiConfig) {
-      return res.status(400).json({ error: 'Önce Ops Center API yapılandırmasını kaydedin.' });
-    }
-
+    const host = req.body.host;
     const port = parseInt(req.body.port || '20964', 10);
     const username = req.body.username;
     const password = req.body.password;
 
+    if (!host) {
+      return res.status(400).json({ error: 'Protector host adresi gereklidir.' });
+    }
     if (!username || !password) {
       return res.status(400).json({ error: 'Kullanıcı adı ve şifre gereklidir.' });
     }
 
     const result = await protectorApi.testConnection(
-      apiConfig.host,
+      host,
       port,
       username,
       password,
-      !!apiConfig.accept_self_signed
+      !!(apiConfig?.accept_self_signed)
     );
 
     if (result.success) {

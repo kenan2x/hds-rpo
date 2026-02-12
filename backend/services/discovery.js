@@ -23,7 +23,7 @@ function getApiConfig() {
   const db = getDb();
   const config = db.prepare(
     `SELECT host, port, use_ssl, accept_self_signed,
-            protector_port, protector_username,
+            protector_host, protector_port, protector_username,
             protector_encrypted_password, protector_iv, protector_auth_tag
      FROM api_config ORDER BY id DESC LIMIT 1`
   ).get();
@@ -35,6 +35,7 @@ function getApiConfig() {
     port: config.port,
     useSsl: !!config.use_ssl,
     acceptSelfSigned: !!config.accept_self_signed,
+    protectorHost: config.protector_host || null,
     protectorPort: config.protector_port || 20964,
     protectorUsername: config.protector_username || null,
     protectorEncryptedPassword: config.protector_encrypted_password || null,
@@ -47,7 +48,7 @@ function getApiConfig() {
  * Returns decrypted Protector credentials if configured.
  */
 function getProtectorCredentials(apiConfig) {
-  if (!apiConfig.protectorUsername || !apiConfig.protectorEncryptedPassword) {
+  if (!apiConfig.protectorHost || !apiConfig.protectorUsername || !apiConfig.protectorEncryptedPassword) {
     return null;
   }
   try {
@@ -418,7 +419,7 @@ async function discoverViaProtector() {
     console.log('[discovery] Attempting Protector-based discovery...');
 
     const token = await protectorApi.authenticate(
-      apiConfig.host,
+      apiConfig.protectorHost,
       apiConfig.protectorPort,
       protectorCreds.username,
       protectorCreds.password,
@@ -426,7 +427,7 @@ async function discoverViaProtector() {
     );
 
     const results = await protectorApi.discoverReplication(
-      apiConfig.host,
+      apiConfig.protectorHost,
       apiConfig.protectorPort,
       token,
       apiConfig.acceptSelfSigned
