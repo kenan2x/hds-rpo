@@ -1,0 +1,16 @@
+version: '3.8'
+services:
+  rpo-monitor:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - rpo-data:/app/data
+    environment:
+      - NODE_ENV=production
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-change-this-encryption-key-in-production}
+      - JWT_SECRET=${JWT_SECRET:-change-this-jwt-secret-in-production}
+    restart: unless-stopped
+
+volumes:
+  rpo-data:
