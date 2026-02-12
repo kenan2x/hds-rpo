@@ -3,7 +3,8 @@ const bcrypt = require('bcryptjs');
 const path = require('path');
 const fs = require('fs');
 
-const DB_PATH = path.resolve(__dirname, '../../data/rpo-monitor.db');
+const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, '../../data');
+const DB_PATH = path.join(DATA_DIR, 'rpo-monitor.db');
 
 let db = null;
 

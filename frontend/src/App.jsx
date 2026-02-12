@@ -93,8 +93,8 @@ function PasswordChangeModal({ onComplete }) {
       setError('Yeni şifreler eşleşmiyor.');
       return;
     }
-    if (newPassword.length < 6) {
-      setError('Yeni şifre en az 6 karakter olmalıdır.');
+    if (newPassword.length < 8) {
+      setError('Yeni şifre en az 8 karakter olmalıdır.');
       return;
     }
 

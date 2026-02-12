@@ -246,6 +246,7 @@ router.post('/:storageDeviceId/authenticate', async (req, res) => {
     res.json({
       message: 'Kimlik doğrulama başarılı. Bilgiler kaydedildi.',
       storage_device_id: storageDeviceId,
+      username,
       is_authenticated: true,
     });
   } catch (err) {

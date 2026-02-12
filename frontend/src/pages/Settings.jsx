@@ -223,13 +223,17 @@ function StorageCredentialsTab() {
     const loadStorages = async () => {
       try {
         const res = await axios.get('/api/storages');
-        setStorages(res.data.storages || []);
-        // Mark already authenticated
+        const storageList = res.data.storages || [];
+        setStorages(storageList);
+        // Mark already authenticated and pre-fill usernames
         const statuses = {};
-        (res.data.storages || []).forEach((s) => {
+        const creds = {};
+        for (const s of storageList) {
           if (s.is_authenticated) statuses[s.storage_device_id] = 'success';
-        });
+          if (s.username) creds[s.storage_device_id] = { username: s.username, password: '' };
+        }
         setAuthStatus(statuses);
+        setCredentials(creds);
       } catch {
         // ignore
       } finally {
@@ -696,7 +700,7 @@ function AlertHistoryTab() {
     try {
       await axios.post(`/api/alerts/${alertId}/acknowledge`);
       setAlerts((prev) =>
-        prev.map((a) => (a.id === alertId ? { ...a, acknowledged: true } : a))
+        prev.map((a) => (a.id === alertId ? { ...a, is_acknowledged: 1 } : a))
       );
     } catch {
       // ignore
@@ -749,7 +753,7 @@ function AlertHistoryTab() {
             <div
               key={alert.id}
               className={`flex items-start gap-3 p-3 rounded-lg border ${
-                alert.acknowledged ? 'opacity-50' : ''
+                alert.is_acknowledged ? 'opacity-50' : ''
               } ${getSeverityColor(alert.severity)}`}
             >
               <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
@@ -760,7 +764,7 @@ function AlertHistoryTab() {
                   {alert.group_name && ` | ${alert.group_name}`}
                 </p>
               </div>
-              {!alert.acknowledged && (
+              {!alert.is_acknowledged && (
                 <button
                   onClick={() => handleAcknowledge(alert.id)}
                   disabled={acknowledging[alert.id]}
@@ -773,7 +777,7 @@ function AlertHistoryTab() {
                   )}
                 </button>
               )}
-              {alert.acknowledged && (
+              {alert.is_acknowledged && (
                 <Check className="w-4 h-4 text-green-500 flex-shrink-0" />
               )}
             </div>

@@ -288,12 +288,45 @@ function Step2StorageAuth({ onNext, onBack }) {
   const [authLoading, setAuthLoading] = useState({});
   const [showPasswords, setShowPasswords] = useState({});
 
+  // Helper to process storages response: set authStatus and pre-fill usernames
+  const processStorages = (storageList) => {
+    setStorages(storageList);
+    const statuses = {};
+    const creds = {};
+    for (const s of storageList) {
+      if (s.is_authenticated) {
+        statuses[s.storage_device_id] = 'success';
+      }
+      if (s.username) {
+        creds[s.storage_device_id] = { username: s.username, password: '' };
+      }
+    }
+    setAuthStatus((prev) => ({ ...prev, ...statuses }));
+    setCredentials((prev) => ({ ...prev, ...creds }));
+  };
+
+  // Auto-load existing storages on mount
+  useEffect(() => {
+    const loadExisting = async () => {
+      try {
+        const res = await axios.get('/api/storages');
+        const existing = res.data.storages || [];
+        if (existing.length > 0) {
+          processStorages(existing);
+        }
+      } catch {
+        // No storages yet
+      }
+    };
+    loadExisting();
+  }, []);
+
   const handleDiscover = async () => {
     setDiscovering(true);
     setError('');
     try {
       const res = await axios.post('/api/storages/discover');
-      setStorages(res.data.storages || []);
+      processStorages(res.data.storages || []);
     } catch (err) {
       setError(err.response?.data?.error || 'Depolama kesfetme basarisiz.');
     } finally {
@@ -393,7 +426,14 @@ function Step2StorageAuth({ onNext, onBack }) {
                     </span>
                   )}
                   {status === 'success' && (
-                    <CheckCircle2 className="w-5 h-5 text-green-500 ml-auto" />
+                    <div className="flex items-center gap-2 ml-auto">
+                      {(credentials[sid]?.username || storage.username) && (
+                        <span className="text-xs text-green-400">
+                          {credentials[sid]?.username || storage.username}
+                        </span>
+                      )}
+                      <CheckCircle2 className="w-5 h-5 text-green-500" />
+                    </div>
                   )}
                   {status && status !== 'success' && (
                     <div className="flex items-center gap-1 ml-auto text-red-400">

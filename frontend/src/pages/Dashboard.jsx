@@ -118,11 +118,13 @@ function formatTime(seconds) {
 }
 
 function formatBytes(bytes) {
-  if (bytes === 0) return '0 B';
+  if (bytes == null || bytes === 0) return '0 B';
+  const absBytes = Math.abs(bytes);
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  const i = Math.min(Math.floor(Math.log(absBytes) / Math.log(k)), sizes.length - 1);
+  const value = parseFloat((absBytes / Math.pow(k, i)).toFixed(2));
+  return (bytes < 0 ? '-' : '') + value + ' ' + sizes[i];
 }
 
 function formatNumber(num) {
@@ -360,6 +362,7 @@ function GroupCard({ group }) {
   const [trendData, setTrendData] = useState([]);
   const [volumes, setVolumes] = useState([]);
   const [volumesLoading, setVolumesLoading] = useState(false);
+  const [trendDirection, setTrendDirection] = useState(null);
 
   const latestRpo = group.latest_rpo || {};
   const journalStatusCode = latestRpo.journal_status || '';
@@ -387,20 +390,24 @@ function GroupCard({ group }) {
     fetchVolumes();
   }, [expanded, group.cg_id]);
 
-  // Fetch trend data
+  // Fetch trend data and actual trend direction
   useEffect(() => {
     const fetchTrend = async () => {
       try {
-        const res = await axios.get(
-          `/api/monitoring/groups/${group.cg_id}/history?timeframe=${timeRange}`
-        );
-        setTrendData(res.data.history || []);
+        const [historyRes, detailRes] = await Promise.all([
+          axios.get(`/api/monitoring/groups/${group.cg_id}/history?timeframe=${timeRange}`),
+          axios.get(`/api/monitoring/groups/${group.cg_id}`).catch(() => null),
+        ]);
+        setTrendData(historyRes.data.history || []);
+        if (detailRes?.data?.trend) {
+          setTrendDirection(detailRes.data.trend);
+        }
       } catch {
         setTrendData([]);
       }
     };
     fetchTrend();
-  }, [group.id, timeRange]);
+  }, [group.cg_id, timeRange]);
 
   return (
     <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-lg overflow-hidden">
@@ -506,9 +513,9 @@ function GroupCard({ group }) {
               <div className="flex items-center justify-between">
                 <span className="text-xs text-slate-400">Trend</span>
                 <div className="flex items-center gap-1.5">
-                  {getTrendIcon(group.severity === 'normal' ? 'stable' : 'increasing')}
+                  {getTrendIcon(trendDirection || 'stable')}
                   <span className="text-xs text-slate-300">
-                    {getTrendLabel(group.severity === 'normal' ? 'stable' : 'increasing')}
+                    {getTrendLabel(trendDirection || 'stable')}
                   </span>
                 </div>
               </div>
