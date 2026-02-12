@@ -10,11 +10,15 @@ RUN npm run build
 FROM node:20-alpine
 WORKDIR /app
 
-# Install build dependencies for better-sqlite3
+# Install build dependencies for better-sqlite3 native compilation
 RUN apk add --no-cache python3 make g++
 
-COPY backend/package*.json ./
-RUN npm ci --production && apk del python3 make g++
+COPY backend/package.json ./
+# Fresh install without lock file to get correct platform binaries,
+# then rebuild better-sqlite3 from source to guarantee native compatibility
+RUN npm install --omit=dev && \
+    npm rebuild better-sqlite3 --build-from-source && \
+    apk del python3 make g++
 
 COPY backend/ ./
 COPY --from=frontend-build /app/frontend/dist ./public
