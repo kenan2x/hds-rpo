@@ -110,6 +110,21 @@ async function authenticate(host, protectorPort, username, password, acceptSelfS
       const status = err.response?.status;
       const code = err.code;
 
+      // SSL certificate errors — fail immediately with clear message
+      const sslErrors = [
+        'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+        'DEPTH_ZERO_SELF_SIGNED_CERT',
+        'SELF_SIGNED_CERT_IN_CHAIN',
+        'CERT_HAS_EXPIRED',
+        'ERR_TLS_CERT_ALTNAME_INVALID',
+      ];
+      if (sslErrors.includes(code)) {
+        throw new Error(
+          `SSL sertifika hatasi (port ${port}): ${code}. ` +
+          `"Kendinden Imzali Sertifika Kabul Et" secenegini etkinlestirin.`
+        );
+      }
+
       // 401/403 = endpoint exists but credentials are wrong — stop trying
       if (status === 401 || status === 403) {
         throw new Error(
