@@ -19,8 +19,13 @@ const https = require('https');
  */
 
 const TOKEN_REFRESH_MS = 4 * 60 * 1000; // Refresh 4 minutes (before 5-min expiry)
-const COMMON_SERVICES_PORT = 443;       // Default port for Common Services auth
 const AUTH_PATH = '/portal/auth/v1/providers/builtin/token';
+
+// Common Services may run on different ports depending on installation type:
+//   443  — standalone / installer default
+//   8443 — OVA appliance default
+// The Protector port (20964) is also tried as a fallback.
+const COMMON_SERVICES_PORTS = [443, 8443];
 
 // In-memory token cache
 let cachedToken = null;
@@ -64,9 +69,9 @@ function createClient(host, port, acceptSelfSigned = false) {
 async function authenticate(host, protectorPort, username, password, acceptSelfSigned = false) {
   const basicAuth = Buffer.from(`${username}:${password}`).toString('base64');
 
-  // Ports to try for Common Services auth
-  const portsToTry = [COMMON_SERVICES_PORT];
-  if (protectorPort !== COMMON_SERVICES_PORT) {
+  // Ports to try for Common Services auth (443, 8443, then the Protector port)
+  const portsToTry = [...COMMON_SERVICES_PORTS];
+  if (!portsToTry.includes(protectorPort)) {
     portsToTry.push(protectorPort);
   }
 
@@ -151,7 +156,7 @@ async function authenticate(host, protectorPort, username, password, acceptSelfS
     `Common Services kimlik dogrulama basarisiz.\n` +
     `Auth endpoint: ${AUTH_PATH}\n` +
     `Denenen portlar:\n${portList}\n\n` +
-    `Not: Common Services varsayilan portu 443'tur (Protector portu degil). ` +
+    `Not: Common Services varsayilan portu 443 (installer) veya 8443 (OVA appliance) olabilir. ` +
     `Common Services'in bu sunucuda calistigindan emin olun.`
   );
 }
