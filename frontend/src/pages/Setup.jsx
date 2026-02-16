@@ -332,8 +332,9 @@ function Step1ApiConfig({ onNext }) {
           )}
         </div>
         <p className="text-slate-400 text-sm mb-6">
-          Replikasyon ciftlerinin otomatik kesfedilmesi icin Ops Center Protector (Common Services) bilgilerini girin.
-          Protector farkli bir sunucuda calisiyor olabilir.
+          Replikasyon ciftlerinin otomatik kesfedilmesi icin Ops Center Protector bilgilerini girin.
+          Kimlik dogrulama Common Services uzerinden yapilir (varsayilan port: 443).
+          Protector API icin port 20964 kullanilir.
         </p>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
