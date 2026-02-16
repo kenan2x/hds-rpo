@@ -297,15 +297,8 @@ router.post('/protector', (req, res) => {
  */
 router.post('/protector/test', async (req, res) => {
   try {
-    const db = getDb();
-    const apiConfig = db.prepare(
-      'SELECT accept_self_signed FROM api_config ORDER BY id DESC LIMIT 1'
-    ).get();
-
-    const host = req.body.host;
-    const port = parseInt(req.body.port || '20964', 10);
-    const username = req.body.username;
-    const password = req.body.password;
+    const { host, port: portStr, username, password, accept_self_signed } = req.body;
+    const port = parseInt(portStr || '20964', 10);
 
     if (!host) {
       return res.status(400).json({ error: 'Protector host adresi gereklidir.' });
@@ -314,12 +307,23 @@ router.post('/protector/test', async (req, res) => {
       return res.status(400).json({ error: 'Kullanıcı adı ve şifre gereklidir.' });
     }
 
+    // Use the value from request body (frontend passes the current toggle state)
+    // Fall back to the saved Config Manager setting
+    let acceptSelfSigned = accept_self_signed;
+    if (acceptSelfSigned === undefined) {
+      const db = getDb();
+      const apiConfig = db.prepare(
+        'SELECT accept_self_signed FROM api_config ORDER BY id DESC LIMIT 1'
+      ).get();
+      acceptSelfSigned = !!(apiConfig?.accept_self_signed);
+    }
+
     const result = await protectorApi.testConnection(
       host,
       port,
       username,
       password,
-      !!(apiConfig?.accept_self_signed)
+      !!acceptSelfSigned
     );
 
     if (result.success) {

@@ -175,6 +175,7 @@ function Step1ApiConfig({ onNext }) {
         port: parseInt(protectorPort, 10),
         username: protectorUsername,
         password: protectorPassword,
+        accept_self_signed: acceptSelfSigned,
       });
       setProtectorTestResult({
         success: true,
@@ -210,6 +211,7 @@ function Step1ApiConfig({ onNext }) {
           port: parseInt(protectorPort, 10),
           username: protectorUsername,
           password: protectorPassword,
+          accept_self_signed: acceptSelfSigned,
         });
       }
 
