@@ -5,14 +5,13 @@ const sessionManager = require('./sessionManager');
 const { decrypt } = require('../utils/encryption');
 
 /**
- * 3DC Pair Auto-Discovery Service
+ * 3DC Replikasyon Kesif Servisi
  *
- * Discovers storage systems and replication pairs using two complementary methods:
- * 1. Ops Center Protector / Administrator API — for pair and replication topology discovery
- * 2. Configuration Manager REST API — for journal-level data and direct pair queries
+ * Iki katmanli mimari:
+ *   1. Protector        → Depolama sistemleri ve replikasyon topolojisi (grup seviyesi)
+ *   2. Config Manager   → Volume detaylari: journal, LDEV, RPO hesaplama (volume seviyesi)
  *
- * Falls back gracefully: if Protector is not configured or returns no data,
- * the service uses Configuration Manager's journal data to discover CGs.
+ * Protector yoksa Config Manager'in journal verisinden CG'ler kesfedilir.
  */
 
 // ---------------------------------------------------------------------------
@@ -402,8 +401,8 @@ async function discoverConsistencyGroups(storageDeviceId) {
 // ---------------------------------------------------------------------------
 
 /**
- * Attempts to discover replication pairs via Ops Center Protector.
- * Returns null if Protector is not configured or discovery fails.
+ * Protector uzerinden depolama ve replikasyon kesfeder.
+ * Protector yapilandirilmamissa null doner.
  */
 async function discoverViaProtector() {
   const apiConfig = getApiConfig();
@@ -411,12 +410,12 @@ async function discoverViaProtector() {
 
   const protectorCreds = getProtectorCredentials(apiConfig);
   if (!protectorCreds) {
-    console.log('[discovery] Protector not configured, skipping Protector discovery.');
+    console.log('[discovery] Protector yapilandirilmamis, atlaniyor.');
     return null;
   }
 
   try {
-    console.log('[discovery] Attempting Protector-based discovery...');
+    console.log('[discovery] Protector uzerinden kesif baslatiliyor...');
 
     const cookie = await protectorApi.authenticate(
       apiConfig.protectorHost,
@@ -426,7 +425,7 @@ async function discoverViaProtector() {
       apiConfig.acceptSelfSigned
     );
 
-    const results = await protectorApi.discoverReplication(
+    const results = await protectorApi.discoverFromProtector(
       apiConfig.protectorHost,
       apiConfig.protectorPort,
       cookie,
@@ -434,14 +433,15 @@ async function discoverViaProtector() {
     );
 
     console.log(
-      `[discovery] Protector discovery: method=${results.discoveryMethod}, ` +
-      `nodes=${results.nodes.length}, dataFlows=${results.dataFlows.length}, ` +
-      `rpoReport=${results.rpoReport.length}`
+      `[discovery] Protector sonuc: ` +
+      `${results.storages.length} depolama, ` +
+      `${results.replications.length} replikasyon, ` +
+      `${results.rpoStatus.length} RPO durumu`
     );
 
     return results;
   } catch (err) {
-    console.warn('[discovery] Protector discovery failed:', err.message);
+    console.warn('[discovery] Protector kesfi basarisiz:', err.message);
     return null;
   }
 }
@@ -573,14 +573,13 @@ async function runFullDiscovery() {
     errors: [],
   };
 
-  // Step 1: Try Protector discovery
+  // Adim 1: Protector uzerinden depolama ve replikasyon kesfet
   const protectorData = await discoverViaProtector();
   if (protectorData) {
     results.protectorResults = {
-      discoveryMethod: protectorData.discoveryMethod,
-      nodesFound: protectorData.nodes.length,
-      dataFlowsFound: protectorData.dataFlows.length,
-      rpoEntriesFound: protectorData.rpoReport.length,
+      storagesFound: protectorData.storages.length,
+      replicationsFound: protectorData.replications.length,
+      rpoStatusCount: protectorData.rpoStatus.length,
     };
   }
 

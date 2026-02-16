@@ -332,8 +332,7 @@ function Step1ApiConfig({ onNext }) {
           )}
         </div>
         <p className="text-slate-400 text-sm mb-6">
-          Replikasyon ciftlerinin otomatik kesfedilmesi icin Ops Center Protector bilgilerini girin.
-          Protector API uzerinden dogrudan kimlik dogrulama yapilir (varsayilan port: 20964).
+          Depolama sistemleri ve replikasyon topolojisini kesfetmek icin Protector bilgilerini girin.
         </p>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
@@ -416,25 +415,22 @@ function Step1ApiConfig({ onNext }) {
               <span className="text-sm">{protectorTestResult.message}</span>
             </div>
             {protectorTestResult.details && protectorTestResult.success && (
-              <div className="mt-2 text-xs text-slate-400">
+              <div className="mt-2 text-xs text-slate-400 flex flex-wrap gap-3">
                 {protectorTestResult.details.apiVersion && (
                   <span>API v{protectorTestResult.details.apiVersion}</span>
                 )}
-                {protectorTestResult.details.discoveryMethod && (
-                  <span className="ml-3">Kesif: {protectorTestResult.details.discoveryMethod}</span>
+                {protectorTestResult.details.storagesFound > 0 && (
+                  <span>{protectorTestResult.details.storagesFound} depolama sistemi</span>
                 )}
-                {protectorTestResult.details.nodesFound > 0 && (
-                  <span className="ml-3">{protectorTestResult.details.nodesFound} node</span>
+                {protectorTestResult.details.replicationsFound > 0 && (
+                  <span>{protectorTestResult.details.replicationsFound} replikasyon</span>
                 )}
-                {protectorTestResult.details.dataFlowsFound > 0 && (
-                  <span className="ml-3">{protectorTestResult.details.dataFlowsFound} veri akisi</span>
-                )}
-                {protectorTestResult.details.rpoEntriesFound > 0 && (
-                  <span className="ml-3">{protectorTestResult.details.rpoEntriesFound} RPO kaydi</span>
+                {protectorTestResult.details.rpoStatusCount > 0 && (
+                  <span>{protectorTestResult.details.rpoStatusCount} RPO durumu</span>
                 )}
                 {protectorTestResult.details.failedEndpoints?.length > 0 && (
-                  <span className="ml-3 text-yellow-400">
-                    Basarisiz: {protectorTestResult.details.failedEndpoints.join(', ')}
+                  <span className="text-yellow-400">
+                    Erisilemeyen: {protectorTestResult.details.failedEndpoints.join(', ')}
                   </span>
                 )}
               </div>
