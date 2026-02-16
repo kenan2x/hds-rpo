@@ -17,6 +17,7 @@ import {
   ToggleLeft,
   ToggleRight,
   RefreshCw,
+  Trash2,
 } from 'lucide-react';
 
 const STEPS = [
@@ -28,10 +29,55 @@ const STEPS = [
 export default function Setup() {
   const navigate = useNavigate();
   const [currentStep, setCurrentStep] = useState(1);
+  const [clearing, setClearing] = useState(false);
+  const [clearResult, setClearResult] = useState(null);
+
+  const handleClearDiscovery = async () => {
+    if (!window.confirm('Kesif verileri (tutarlilik gruplari, volume bilgileri, RPO gecmisi, uyarilar) silinecek.\nAPI ve depolama kimlik bilgileri korunacak.\n\nDevam etmek istiyor musunuz?')) {
+      return;
+    }
+    setClearing(true);
+    setClearResult(null);
+    try {
+      const res = await axios.post('/api/config/clear-discovery');
+      const d = res.data.deleted;
+      setClearResult({
+        success: true,
+        message: `Temizlendi: ${d.consistency_groups} CG, ${d.cg_volumes} volume, ${d.rpo_history} RPO, ${d.alerts} uyari`,
+      });
+    } catch (err) {
+      setClearResult({
+        success: false,
+        message: err.response?.data?.error || 'Temizleme basarisiz.',
+      });
+    } finally {
+      setClearing(false);
+    }
+  };
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold text-white mb-2">Kurulum Sihirbazi</h1>
+      <div className="flex items-center justify-between mb-2">
+        <h1 className="text-2xl font-bold text-white">Kurulum Sihirbazi</h1>
+        <button
+          onClick={handleClearDiscovery}
+          disabled={clearing}
+          className="flex items-center gap-2 px-3 py-1.5 bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 text-red-400 text-sm rounded-lg transition-colors disabled:opacity-50"
+          title="Kesif verilerini temizle (API ayarlari korunur)"
+        >
+          {clearing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+          Kesif Verilerini Temizle
+        </button>
+      </div>
+      {clearResult && (
+        <div className={`mb-4 p-2 rounded-lg border text-sm ${
+          clearResult.success
+            ? 'bg-green-500/10 border-green-500/30 text-green-400'
+            : 'bg-red-500/10 border-red-500/30 text-red-400'
+        }`}>
+          {clearResult.message}
+        </div>
+      )}
       <p className="text-slate-400 mb-8">
         Ops Center API baglantisini yapilandirin ve depolama sistemlerini kesfet.
       </p>

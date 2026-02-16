@@ -349,4 +349,43 @@ router.post('/protector/test', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/config/clear-discovery
+ * Kesif verilerini temizler (consistency groups, volumes, RPO gecmisi, uyarilar).
+ * Kullanici, API ve depolama kimlik bilgilerini KORUR.
+ */
+router.post('/clear-discovery', (_req, res) => {
+  try {
+    const db = getDb();
+
+    const counts = {};
+    counts.consistency_groups = db.prepare('SELECT COUNT(*) as c FROM consistency_groups').get().c;
+    counts.cg_volumes = db.prepare('SELECT COUNT(*) as c FROM cg_volumes').get().c;
+    counts.rpo_history = db.prepare('SELECT COUNT(*) as c FROM rpo_history').get().c;
+    counts.alerts = db.prepare('SELECT COUNT(*) as c FROM alerts').get().c;
+
+    db.exec(`
+      DELETE FROM consistency_groups;
+      DELETE FROM cg_volumes;
+      DELETE FROM rpo_history;
+      DELETE FROM alerts;
+    `);
+
+    console.log(
+      `[config] Kesif verileri temizlendi: ` +
+      `${counts.consistency_groups} CG, ${counts.cg_volumes} volume, ` +
+      `${counts.rpo_history} RPO kaydi, ${counts.alerts} uyari silindi.`
+    );
+
+    res.json({
+      success: true,
+      message: 'Kesif verileri temizlendi.',
+      deleted: counts,
+    });
+  } catch (err) {
+    console.error('[config] Clear discovery error:', err.message);
+    res.status(500).json({ error: 'Kesif verileri temizlenirken bir hata olustu.' });
+  }
+});
+
 module.exports = router;
