@@ -140,237 +140,149 @@ export default function Setup() {
   );
 }
 
-// --- Protector Test Sonucu: Detay Gösterimi ---
+// --- Protector Test Sonucu: Topoloji Gösterimi ---
 
-/**
- * Bir nesne dizisinden anahtar alanları çıkarır ve tablo olarak gösterir.
- * Bilinmeyen veri yapıları için de çalışır — ilk nesnenin alanlarını otomatik bulur.
- */
-function DataSection({ title, data, color = 'slate' }) {
-  const [expanded, setExpanded] = useState(false);
+/** Durum renk kodlari */
+function StatusDot({ ok, label }) {
+  return (
+    <span className="inline-flex items-center gap-1 text-xs">
+      <span className={`w-2 h-2 rounded-full ${ok ? 'bg-green-500' : 'bg-red-500'}`} />
+      <span className={ok ? 'text-green-400' : 'text-red-400'}>{label}</span>
+    </span>
+  );
+}
 
-  if (!data || data.length === 0) return null;
-
-  // İlk öğeden anahtar alanları çıkar (iç içe nesneler hariç)
-  const sampleItem = data[0];
-  const keys = Object.keys(sampleItem).filter((k) => {
-    const v = sampleItem[k];
-    return v !== null && v !== undefined && typeof v !== 'object';
-  });
-  // Nesne tipindeki alanları ayrı tut (genişletilebilir detay için)
-  const objectKeys = Object.keys(sampleItem).filter((k) => {
-    const v = sampleItem[k];
-    return v !== null && v !== undefined && typeof v === 'object';
-  });
-
-  const colorMap = {
-    blue: 'text-blue-400 border-blue-500/30',
-    green: 'text-green-400 border-green-500/30',
-    purple: 'text-purple-400 border-purple-500/30',
-    slate: 'text-slate-300 border-slate-600',
+/** Node type badge */
+function NodeTypeBadge({ type }) {
+  const map = {
+    HardwareNodeBlock: { label: 'Storage', color: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
+    HitachiVirtualStoragePlatform: { label: 'VSP', color: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30' },
+    OSHost: { label: 'Host', color: 'bg-slate-500/20 text-slate-400 border-slate-500/30' },
   };
+  const info = map[type] || { label: type, color: 'bg-slate-500/20 text-slate-400 border-slate-500/30' };
+  return (
+    <span className={`text-[10px] px-1.5 py-0.5 rounded border ${info.color}`}>
+      {info.label}
+    </span>
+  );
+}
+
+function ProtectorTestDetails({ details }) {
+  const [showRawJson, setShowRawJson] = useState(false);
+
+  const { storageNodes, dataFlows, rpoEntries, rawCounts, errors } = details;
+
+  const hasData = storageNodes?.length > 0 || dataFlows?.length > 0;
 
   return (
-    <div className="mt-3">
-      <div className={`text-xs font-semibold ${colorMap[color]?.split(' ')[0] || 'text-slate-300'} mb-1.5 flex items-center gap-2`}>
-        {title} ({data.length})
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="text-[10px] bg-slate-700 hover:bg-slate-600 text-slate-400 px-1.5 py-0.5 rounded transition-colors"
-        >
-          {expanded ? 'Tabloyu Goster' : 'Ham JSON'}
-        </button>
-      </div>
+    <div className="mt-4 space-y-4">
+      {details.apiVersion && (
+        <div className="text-xs text-slate-500">API v{details.apiVersion}</div>
+      )}
 
-      {expanded ? (
-        <div className="bg-slate-900/60 rounded p-2 max-h-64 overflow-auto">
-          <pre className="text-xs text-slate-400 whitespace-pre-wrap break-all">
-            {JSON.stringify(data, null, 2)}
-          </pre>
-        </div>
-      ) : (
-        <div className="bg-slate-900/60 rounded overflow-hidden">
-          <div className="overflow-x-auto max-h-64">
+      {/* Depolama Sistemleri */}
+      {storageNodes?.length > 0 && (
+        <div>
+          <div className="text-xs font-semibold text-blue-400 mb-2">
+            Depolama Sistemleri ({storageNodes.length})
+            {rawCounts && (
+              <span className="text-slate-500 font-normal ml-2">
+                (toplam {rawCounts.totalNodes} node, {rawCounts.totalNodes - storageNodes.length} host/diger filtrelendi)
+              </span>
+            )}
+          </div>
+          <div className="bg-slate-900/60 rounded-lg overflow-hidden">
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-slate-700">
-                  <th className="px-2 py-1.5 text-left text-slate-500 font-medium">#</th>
-                  {keys.slice(0, 6).map((k) => (
-                    <th key={k} className="px-2 py-1.5 text-left text-slate-500 font-medium whitespace-nowrap">
-                      {k}
-                    </th>
-                  ))}
-                  {objectKeys.length > 0 && (
-                    <th className="px-2 py-1.5 text-left text-slate-500 font-medium">+detay</th>
-                  )}
+                  <th className="px-3 py-2 text-left text-slate-500 font-medium">Ad</th>
+                  <th className="px-3 py-2 text-left text-slate-500 font-medium">Tip</th>
+                  <th className="px-3 py-2 text-left text-slate-500 font-medium">Durum</th>
                 </tr>
               </thead>
               <tbody>
-                {data.map((item, idx) => (
-                  <DataRow key={idx} item={item} idx={idx} keys={keys.slice(0, 6)} objectKeys={objectKeys} />
+                {storageNodes.map((node) => (
+                  <tr key={node.id} className="border-b border-slate-800 hover:bg-slate-800/50">
+                    <td className="px-3 py-2 text-white font-medium">{node.name}</td>
+                    <td className="px-3 py-2"><NodeTypeBadge type={node.type} /></td>
+                    <td className="px-3 py-2">
+                      <div className="flex gap-3">
+                        <StatusDot ok={node.accessible} label={node.accessible ? 'Eriselebilir' : 'Erisilemez'} />
+                        <StatusDot ok={node.connected} label={node.connected ? 'Bagli' : 'Bagli Degil'} />
+                      </div>
+                    </td>
+                  </tr>
                 ))}
               </tbody>
             </table>
           </div>
         </div>
       )}
-    </div>
-  );
-}
 
-function DataRow({ item, idx, keys, objectKeys }) {
-  const [showDetail, setShowDetail] = useState(false);
-
-  return (
-    <>
-      <tr className="border-b border-slate-800 hover:bg-slate-800/50">
-        <td className="px-2 py-1.5 text-slate-600">{idx + 1}</td>
-        {keys.map((k) => (
-          <td key={k} className="px-2 py-1.5 text-slate-300 whitespace-nowrap max-w-[200px] truncate" title={String(item[k] ?? '')}>
-            {renderValue(item[k])}
-          </td>
-        ))}
-        {objectKeys.length > 0 && (
-          <td className="px-2 py-1.5">
-            <button
-              onClick={() => setShowDetail(!showDetail)}
-              className="text-blue-400 hover:text-blue-300 text-[10px]"
-            >
-              {showDetail ? 'Gizle' : 'Goster'}
-            </button>
-          </td>
-        )}
-      </tr>
-      {showDetail && (
-        <tr>
-          <td colSpan={keys.length + 2} className="px-2 py-2 bg-slate-900/80">
-            <pre className="text-[10px] text-slate-500 whitespace-pre-wrap break-all max-h-40 overflow-auto">
-              {JSON.stringify(
-                Object.fromEntries(objectKeys.map((k) => [k, item[k]])),
-                null,
-                2
-              )}
-            </pre>
-          </td>
-        </tr>
-      )}
-    </>
-  );
-}
-
-function renderValue(val) {
-  if (val === null || val === undefined) return <span className="text-slate-600">-</span>;
-  if (typeof val === 'boolean') {
-    return val ? (
-      <span className="text-green-400">evet</span>
-    ) : (
-      <span className="text-slate-500">hayir</span>
-    );
-  }
-  return String(val);
-}
-
-/**
- * Bir nesnenin yapisini cikarir: tum degerler yerine tip bilgisi koyar.
- * Dizilerde sadece ilk elemani alir.
- */
-function extractStructure(obj, depth = 0) {
-  if (depth > 8) return '...';
-  if (obj === null || obj === undefined) return null;
-  if (typeof obj === 'string') return '(string)';
-  if (typeof obj === 'number') return '(number)';
-  if (typeof obj === 'boolean') return '(boolean)';
-  if (Array.isArray(obj)) {
-    if (obj.length === 0) return [];
-    return [extractStructure(obj[0], depth + 1)];
-  }
-  if (typeof obj === 'object') {
-    const result = {};
-    for (const [k, v] of Object.entries(obj)) {
-      result[k] = extractStructure(v, depth + 1);
-    }
-    return result;
-  }
-  return '(unknown)';
-}
-
-function ProtectorTestDetails({ details }) {
-  const [showSchema, setShowSchema] = useState(false);
-  const [copied, setCopied] = useState(false);
-
-  const generateSchema = () => {
-    const schema = {};
-    if (details.storages?.length > 0) {
-      schema['storages (Nodes)'] = [extractStructure(details.storages[0])];
-    }
-    if (details.replications?.length > 0) {
-      schema['replications (DataFlows)'] = [extractStructure(details.replications[0])];
-    }
-    if (details.rpoStatus?.length > 0) {
-      schema['rpoStatus (RPO)'] = [extractStructure(details.rpoStatus[0])];
-    }
-    return JSON.stringify(schema, null, 2);
-  };
-
-  const handleCopySchema = () => {
-    const text = generateSchema();
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
-
-  return (
-    <div className="mt-3 space-y-1">
-      {details.apiVersion && (
-        <div className="text-xs text-slate-500">API v{details.apiVersion}</div>
-      )}
-
-      {/* Yapi Sablonu butonu */}
-      <div className="flex gap-2 mt-2">
-        <button
-          onClick={() => setShowSchema(!showSchema)}
-          className="text-xs bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-indigo-400 px-2 py-1 rounded transition-colors"
-        >
-          {showSchema ? 'Yapi Sablonunu Gizle' : 'Yapi Sablonunu Goster'}
-        </button>
-        {showSchema && (
-          <button
-            onClick={handleCopySchema}
-            className={`text-xs px-2 py-1 rounded transition-colors ${
-              copied
-                ? 'bg-green-600/20 border border-green-500/30 text-green-400'
-                : 'bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-300'
-            }`}
-          >
-            {copied ? 'Kopyalandi!' : 'Kopyala'}
-          </button>
-        )}
-      </div>
-
-      {showSchema && (
-        <div className="bg-slate-900/80 border border-indigo-500/20 rounded p-3 max-h-96 overflow-auto">
-          <div className="text-[10px] text-slate-500 mb-2">
-            Sadece alan isimleri ve tipleri — deger iceremez. Kopyalayip paylasabilirsiniz.
+      {/* Replikasyon Topolojisi (DataFlows) */}
+      {dataFlows?.length > 0 && (
+        <div>
+          <div className="text-xs font-semibold text-green-400 mb-2">
+            Replikasyon Topolojisi ({dataFlows.length} DataFlow)
           </div>
-          <pre className="text-xs text-indigo-300 whitespace-pre-wrap break-all">
-            {generateSchema()}
-          </pre>
+          <div className="space-y-2">
+            {dataFlows.map((flow) => (
+              <DataFlowCard key={flow.id} flow={flow} />
+            ))}
+          </div>
         </div>
       )}
 
-      <DataSection title="Depolama Sistemleri (Nodes)" data={details.storages} color="blue" />
-      <DataSection title="Replikasyonlar (DataFlows)" data={details.replications} color="green" />
-      <DataSection title="RPO Durumu" data={details.rpoStatus} color="purple" />
+      {/* RPO Durumu */}
+      {rpoEntries?.length > 0 && (
+        <div>
+          <div className="text-xs font-semibold text-purple-400 mb-2">
+            RPO Durumu ({rpoEntries.length} kayit)
+          </div>
+          <div className="bg-slate-900/60 rounded-lg overflow-hidden">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-slate-700">
+                  <th className="px-3 py-2 text-left text-slate-500 font-medium">DataFlow</th>
+                  <th className="px-3 py-2 text-left text-slate-500 font-medium">Kaynak</th>
+                  <th className="px-3 py-2 text-left text-slate-500 font-medium">Hedef</th>
+                  <th className="px-3 py-2 text-left text-slate-500 font-medium">Durum</th>
+                  <th className="px-3 py-2 text-left text-slate-500 font-medium">Tip</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rpoEntries.map((entry) => {
+                  const statusColor = entry.status === 'eRPO_MET'
+                    ? 'text-green-400'
+                    : entry.status === 'eRPO_NOT_TRACKED'
+                    ? 'text-slate-500'
+                    : 'text-yellow-400';
+                  const statusLabel = entry.status?.replace('eRPO_', '') || '-';
+                  const moverLabel = entry.moverType?.replace('eMOVER_', '') || '-';
+                  return (
+                    <tr key={entry.id} className="border-b border-slate-800 hover:bg-slate-800/50">
+                      <td className="px-3 py-2 text-slate-300">{entry.dataFlowName || '-'}</td>
+                      <td className="px-3 py-2 text-white">{entry.sourceName || '-'}</td>
+                      <td className="px-3 py-2 text-white">{entry.destinationName || '-'}</td>
+                      <td className={`px-3 py-2 font-medium ${statusColor}`}>{statusLabel}</td>
+                      <td className="px-3 py-2 text-slate-400">{moverLabel}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Hatalar */}
-      {details.errors?.length > 0 && (
-        <div className="mt-3">
+      {errors?.length > 0 && (
+        <div>
           <div className="text-xs font-semibold text-yellow-400 mb-1">
-            Erisilemeyen Endpoint'ler ({details.errors.length})
+            Erisilemeyen Endpoint'ler ({errors.length})
           </div>
           <div className="bg-slate-900/60 rounded p-2">
-            {details.errors.map((e, i) => (
+            {errors.map((e, i) => (
               <div key={i} className="text-xs text-yellow-400/80">
                 {e.endpoint}: {e.error}
               </div>
@@ -379,12 +291,100 @@ function ProtectorTestDetails({ details }) {
         </div>
       )}
 
-      {/* Hicbir veri yoksa */}
-      {!details.storages?.length &&
-       !details.replications?.length &&
-       !details.rpoStatus?.length && (
-        <div className="text-xs text-yellow-400 mt-2">
+      {!hasData && (
+        <div className="text-xs text-yellow-400">
           Giris basarili ancak endpoint'lerden veri donmedi.
+        </div>
+      )}
+
+      {/* Ham JSON toggle */}
+      {hasData && (
+        <div>
+          <button
+            onClick={() => setShowRawJson(!showRawJson)}
+            className="text-[10px] bg-slate-700 hover:bg-slate-600 text-slate-400 px-2 py-1 rounded transition-colors"
+          >
+            {showRawJson ? 'Ham JSON Gizle' : 'Ham JSON Goster'}
+          </button>
+          {showRawJson && (
+            <div className="bg-slate-900/80 rounded p-2 mt-2 max-h-64 overflow-auto">
+              <pre className="text-[10px] text-slate-500 whitespace-pre-wrap break-all">
+                {JSON.stringify(details, null, 2)}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Tek bir DataFlow karti — baglantilari gosterir */
+function DataFlowCard({ flow }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const statusColor = flow.isActive ? 'border-green-500/30' : 'border-slate-700';
+  const hasErrors = flow.numInError > 0;
+  const hasOffline = flow.numOffline > 0;
+
+  return (
+    <div className={`bg-slate-900/60 border ${statusColor} rounded-lg p-3`}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="text-slate-400 hover:text-white text-xs"
+          >
+            {expanded ? '▼' : '▶'}
+          </button>
+          <span className="text-white text-sm font-medium">{flow.name}</span>
+          {flow.isActive ? (
+            <span className="text-[10px] bg-green-500/20 text-green-400 border border-green-500/30 px-1.5 py-0.5 rounded">
+              Aktif
+            </span>
+          ) : (
+            <span className="text-[10px] bg-slate-500/20 text-slate-400 border border-slate-500/30 px-1.5 py-0.5 rounded">
+              Pasif
+            </span>
+          )}
+          {hasErrors && (
+            <span className="text-[10px] bg-red-500/20 text-red-400 border border-red-500/30 px-1.5 py-0.5 rounded">
+              {flow.numInError} hata
+            </span>
+          )}
+          {hasOffline && (
+            <span className="text-[10px] bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 px-1.5 py-0.5 rounded">
+              {flow.numOffline} offline
+            </span>
+          )}
+        </div>
+        <span className="text-[10px] text-slate-600">{flow.nodeCount} node</span>
+      </div>
+
+      {/* Baglantilar — her zaman goster */}
+      {flow.connections?.length > 0 && (
+        <div className="space-y-1 ml-5">
+          {flow.connections.map((conn, i) => (
+            <div key={conn.id || i} className="flex items-center gap-2 text-xs">
+              <span className="text-white font-medium">{conn.sourceName}</span>
+              <NodeTypeBadge type={conn.sourceType} />
+              <span className="text-green-400">→</span>
+              <span className="text-white font-medium">{conn.destinationName}</span>
+              <NodeTypeBadge type={conn.destinationType} />
+              {conn.label && (
+                <span className="text-slate-500 text-[10px]">({conn.label})</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Genisletilmis detay */}
+      {expanded && (
+        <div className="mt-2 ml-5 text-[10px] text-slate-500 space-y-1">
+          <div>ID: {flow.id}</div>
+          {flow.activatedDate && <div>Aktif: {flow.activatedDate}</div>}
+          {flow.numInProgress > 0 && <div>Devam eden: {flow.numInProgress}</div>}
         </div>
       )}
     </div>

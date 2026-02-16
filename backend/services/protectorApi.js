@@ -261,20 +261,137 @@ async function discoverFromProtector(host, port, cookie, acceptSelfSigned = fals
 }
 
 /**
- * Protector baglantisini test eder: giris + kesif.
+ * Ham Protector verisinden topoloji haritası çıkarır.
+ *
+ * Nodes listesinden storage'ları filtreler,
+ * DataFlows'dan connections ile kaynak→hedef bağlantılarını çözer,
+ * RPO Status'tan durum bilgisini eşler.
+ *
+ * @returns {Object} { storageNodes, dataFlows, topology }
+ */
+function parseTopology(storages, replications, rpoStatus) {
+  // 1. Node haritası: id → { name, type, accessible, ... }
+  const nodeMap = {};
+  const storageNodes = [];
+
+  for (const node of storages) {
+    nodeMap[node.id] = {
+      id: node.id,
+      name: node.name,
+      type: node.type,
+      resourceId: node.resourceId,
+      accessible: node.stateInfo?.accessible ?? null,
+      connected: node.stateInfo?.connected ?? null,
+      authorized: node.stateInfo?.authorized ?? null,
+    };
+    // Sadece storage tipleri
+    if (node.type === 'HardwareNodeBlock' || node.type === 'HitachiVirtualStoragePlatform') {
+      storageNodes.push(nodeMap[node.id]);
+    }
+  }
+
+  // 2. DataFlow'ları parse et
+  const dataFlows = [];
+
+  for (const flow of replications) {
+    const flowNodes = flow.data?.nodes || [];
+    const flowConnections = flow.data?.connections || [];
+
+    // DataFlow içindeki node id → nodeId eşlemesi
+    const flowNodeMap = {};
+    for (const fn of flowNodes) {
+      flowNodeMap[fn.id] = {
+        flowNodeId: fn.id,
+        nodeId: fn.nodeId, // Ana Nodes listesindeki id
+        type: fn.type,
+        isDestination: fn.isDestination,
+        isGroup: fn.isGroup,
+        // Ana node bilgisini eşle
+        name: nodeMap[fn.nodeId]?.name || fn.nodeId,
+        nodeType: nodeMap[fn.nodeId]?.type || 'unknown',
+      };
+    }
+
+    // Connection'ları çöz: source/destination → gerçek node isimleri
+    const connections = flowConnections.map((conn) => {
+      const src = flowNodeMap[conn.source] || { name: conn.source, nodeType: 'unknown' };
+      const dst = flowNodeMap[conn.destination] || { name: conn.destination, nodeType: 'unknown' };
+      return {
+        id: conn.id,
+        label: conn.label || '',
+        type: conn.type,
+        sourceName: src.name,
+        sourceType: src.nodeType,
+        sourceNodeId: src.nodeId,
+        destinationName: dst.name,
+        destinationType: dst.nodeType,
+        destinationNodeId: dst.nodeId,
+      };
+    });
+
+    dataFlows.push({
+      id: flow.id,
+      name: flow.data?.name || flow.data?.description || flow.id,
+      isActive: flow.isActive,
+      activatedDate: flow.activatedDate,
+      numInError: flow.numInError || 0,
+      numInProgress: flow.numInProgress || 0,
+      numOffline: flow.numOffline || 0,
+      connections,
+      nodeCount: flowNodes.length,
+    });
+  }
+
+  // 3. RPO Status eşle
+  const rpoEntries = rpoStatus.map((entry) => ({
+    id: entry.id,
+    dataFlowId: entry.dataFlow?.id,
+    dataFlowName: entry.dataFlow?.name,
+    status: entry.status,
+    moverType: entry.moverType,
+    lastBackup: entry.lastBackup,
+    sourceNodeId: entry.sourceNode?.id,
+    destinationNodeId: entry.destinationNode?.id,
+    sourceName: nodeMap[entry.sourceNode?.id]?.name || entry.sourceNode?.id,
+    destinationName: nodeMap[entry.destinationNode?.id]?.name || entry.destinationNode?.id,
+    policyName: entry.policy?.name,
+    operationName: entry.policy?.operation?.name,
+    operationType: entry.policy?.operation?.type,
+    rpoUnits: entry.policy?.operation?.rpo?.units,
+  }));
+
+  return { storageNodes, dataFlows, rpoEntries };
+}
+
+/**
+ * Protector baglantisini test eder: giris + kesif + topoloji parse.
  */
 async function testConnection(host, port, username, password, acceptSelfSigned = false) {
   try {
     const cookie = await authenticate(host, port, username, password, acceptSelfSigned);
     const discovery = await discoverFromProtector(host, port, cookie, acceptSelfSigned);
 
+    // Topolojiyi parse et
+    const topology = parseTopology(
+      discovery.storages,
+      discovery.replications,
+      discovery.rpoStatus
+    );
+
     return {
       success: true,
       authenticated: true,
       apiVersion: resolvedApiVersion,
-      storages: discovery.storages,
-      replications: discovery.replications,
-      rpoStatus: discovery.rpoStatus,
+      // Parse edilmiş topoloji
+      storageNodes: topology.storageNodes,
+      dataFlows: topology.dataFlows,
+      rpoEntries: topology.rpoEntries,
+      // Ham veri sayıları
+      rawCounts: {
+        totalNodes: discovery.storages.length,
+        totalDataFlows: discovery.replications.length,
+        totalRpoEntries: discovery.rpoStatus.length,
+      },
       errors: discovery.errors,
     };
   } catch (err) {
