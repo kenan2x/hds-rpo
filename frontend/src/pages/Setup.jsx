@@ -270,11 +270,93 @@ function renderValue(val) {
   return String(val);
 }
 
+/**
+ * Bir nesnenin yapisini cikarir: tum degerler yerine tip bilgisi koyar.
+ * Dizilerde sadece ilk elemani alir.
+ */
+function extractStructure(obj, depth = 0) {
+  if (depth > 8) return '...';
+  if (obj === null || obj === undefined) return null;
+  if (typeof obj === 'string') return '(string)';
+  if (typeof obj === 'number') return '(number)';
+  if (typeof obj === 'boolean') return '(boolean)';
+  if (Array.isArray(obj)) {
+    if (obj.length === 0) return [];
+    return [extractStructure(obj[0], depth + 1)];
+  }
+  if (typeof obj === 'object') {
+    const result = {};
+    for (const [k, v] of Object.entries(obj)) {
+      result[k] = extractStructure(v, depth + 1);
+    }
+    return result;
+  }
+  return '(unknown)';
+}
+
 function ProtectorTestDetails({ details }) {
+  const [showSchema, setShowSchema] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const generateSchema = () => {
+    const schema = {};
+    if (details.storages?.length > 0) {
+      schema['storages (Nodes)'] = [extractStructure(details.storages[0])];
+    }
+    if (details.replications?.length > 0) {
+      schema['replications (DataFlows)'] = [extractStructure(details.replications[0])];
+    }
+    if (details.rpoStatus?.length > 0) {
+      schema['rpoStatus (RPO)'] = [extractStructure(details.rpoStatus[0])];
+    }
+    return JSON.stringify(schema, null, 2);
+  };
+
+  const handleCopySchema = () => {
+    const text = generateSchema();
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
   return (
     <div className="mt-3 space-y-1">
       {details.apiVersion && (
         <div className="text-xs text-slate-500">API v{details.apiVersion}</div>
+      )}
+
+      {/* Yapi Sablonu butonu */}
+      <div className="flex gap-2 mt-2">
+        <button
+          onClick={() => setShowSchema(!showSchema)}
+          className="text-xs bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-indigo-400 px-2 py-1 rounded transition-colors"
+        >
+          {showSchema ? 'Yapi Sablonunu Gizle' : 'Yapi Sablonunu Goster'}
+        </button>
+        {showSchema && (
+          <button
+            onClick={handleCopySchema}
+            className={`text-xs px-2 py-1 rounded transition-colors ${
+              copied
+                ? 'bg-green-600/20 border border-green-500/30 text-green-400'
+                : 'bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-300'
+            }`}
+          >
+            {copied ? 'Kopyalandi!' : 'Kopyala'}
+          </button>
+        )}
+      </div>
+
+      {showSchema && (
+        <div className="bg-slate-900/80 border border-indigo-500/20 rounded p-3 max-h-96 overflow-auto">
+          <div className="text-[10px] text-slate-500 mb-2">
+            Sadece alan isimleri ve tipleri — deger iceremez. Kopyalayip paylasabilirsiniz.
+          </div>
+          <pre className="text-xs text-indigo-300 whitespace-pre-wrap break-all">
+            {generateSchema()}
+          </pre>
+        </div>
       )}
 
       <DataSection title="Depolama Sistemleri (Nodes)" data={details.storages} color="blue" />
