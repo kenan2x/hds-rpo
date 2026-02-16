@@ -146,6 +146,46 @@ async function authenticatedGet(host, port, cookie, path, acceptSelfSigned = fal
 }
 
 /**
+ * API yanıtından dizi çıkarır. Bilinen anahtar isimlerini dener,
+ * bulamazsa yanıttaki ilk diziyi kullanır.
+ * rawKeys: yanıttaki tüm üst-düzey anahtarlar (debug için).
+ */
+function extractArray(data, knownKeys) {
+  if (!data || typeof data !== 'object') return { items: [], foundKey: null, rawKeys: [] };
+
+  const rawKeys = Object.keys(data);
+
+  // Bilinen anahtarları dene
+  for (const key of knownKeys) {
+    if (Array.isArray(data[key]) && data[key].length > 0) {
+      return { items: data[key], foundKey: key, rawKeys };
+    }
+  }
+
+  // Bilinen anahtar bulunamadı — yanıtın kendisi bir dizi mi?
+  if (Array.isArray(data) && data.length > 0) {
+    return { items: data, foundKey: '(root array)', rawKeys: ['(root array)'] };
+  }
+
+  // Yanıttaki ilk diziyi bul
+  for (const key of rawKeys) {
+    if (Array.isArray(data[key]) && data[key].length > 0) {
+      return { items: data[key], foundKey: key, rawKeys };
+    }
+  }
+
+  // Hiç dizi bulunamadı — tek nesne olabilir, onu da diziye sar
+  // (pageInfo gibi meta alanlarını hariç tut)
+  const metaKeys = ['pageInfo', 'count', 'total', 'offset', 'limit'];
+  const dataKeys = rawKeys.filter((k) => !metaKeys.includes(k));
+  if (dataKeys.length === 1 && typeof data[dataKeys[0]] === 'object' && !Array.isArray(data[dataKeys[0]])) {
+    return { items: [data[dataKeys[0]]], foundKey: dataKeys[0], rawKeys };
+  }
+
+  return { items: [], foundKey: null, rawKeys };
+}
+
+/**
  * Protector uzerinden depolama ve replikasyon bilgilerini kesfeder.
  *
  * Endpoint'ler:
@@ -169,36 +209,45 @@ async function discoverFromProtector(host, port, cookie, acceptSelfSigned = fals
   try {
     const url = `/API/${apiVersion}/master/NodeManager/objects/Nodes`;
     const data = await authenticatedGet(host, port, cookie, url, acceptSelfSigned);
-    const nodes = data?.node || data?.nodes || [];
-    if (Array.isArray(nodes) && nodes.length > 0) {
-      results.storages = nodes;
-      console.log(`[protector] ${nodes.length} depolama sistemi bulundu.`);
+    const extracted = extractArray(data, ['node', 'nodes']);
+    results.storages = extracted.items;
+    results.storagesRawKeys = extracted.rawKeys;
+    if (extracted.items.length > 0) {
+      console.log(`[protector] ${extracted.items.length} depolama sistemi bulundu (key: ${extracted.foundKey}).`);
+    } else {
+      console.log(`[protector] Nodes endpointi bos dondu. Anahtarlar: ${extracted.rawKeys.join(', ')}`);
     }
   } catch (err) {
-    results.errors.push({ endpoint: 'Depolama Sistemleri', error: err.message });
+    results.errors.push({ endpoint: 'Depolama Sistemleri (Nodes)', error: err.message });
   }
 
   // 2. Replikasyonlari al (DataFlows)
   try {
     const url = `/API/${apiVersion}/master/DataFlowHandler/objects/DataFlows`;
     const data = await authenticatedGet(host, port, cookie, url, acceptSelfSigned);
-    const flows = data?.dataFlow || data?.dataFlows || [];
-    if (Array.isArray(flows) && flows.length > 0) {
-      results.replications = flows;
-      console.log(`[protector] ${flows.length} replikasyon bulundu.`);
+    const extracted = extractArray(data, ['dataFlow', 'dataFlows', 'data']);
+    results.replications = extracted.items;
+    results.replicationsRawKeys = extracted.rawKeys;
+    if (extracted.items.length > 0) {
+      console.log(`[protector] ${extracted.items.length} replikasyon bulundu (key: ${extracted.foundKey}).`);
+    } else {
+      console.log(`[protector] DataFlows endpointi bos dondu. Anahtarlar: ${extracted.rawKeys.join(', ')}`);
     }
   } catch (err) {
-    results.errors.push({ endpoint: 'Replikasyonlar', error: err.message });
+    results.errors.push({ endpoint: 'Replikasyonlar (DataFlows)', error: err.message });
   }
 
   // 3. RPO durumunu al
   try {
     const url = `/API/${apiVersion}/master/ReportHandler/objects/RPOS/Current/collections/entries`;
     const data = await authenticatedGet(host, port, cookie, url, acceptSelfSigned);
-    const entries = data?.rPOReportEntry || data?.entries || [];
-    if (Array.isArray(entries) && entries.length > 0) {
-      results.rpoStatus = entries;
-      console.log(`[protector] ${entries.length} RPO durumu bulundu.`);
+    const extracted = extractArray(data, ['rPOReportEntry', 'entries', 'rpoReport']);
+    results.rpoStatus = extracted.items;
+    results.rpoStatusRawKeys = extracted.rawKeys;
+    if (extracted.items.length > 0) {
+      console.log(`[protector] ${extracted.items.length} RPO durumu bulundu (key: ${extracted.foundKey}).`);
+    } else {
+      console.log(`[protector] RPO endpointi bos dondu. Anahtarlar: ${extracted.rawKeys.join(', ')}`);
     }
   } catch (err) {
     results.errors.push({ endpoint: 'RPO Durumu', error: err.message });

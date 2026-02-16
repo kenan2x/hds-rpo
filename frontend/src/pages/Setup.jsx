@@ -140,6 +140,175 @@ export default function Setup() {
   );
 }
 
+// --- Protector Test Sonucu: Detay Gösterimi ---
+
+/**
+ * Bir nesne dizisinden anahtar alanları çıkarır ve tablo olarak gösterir.
+ * Bilinmeyen veri yapıları için de çalışır — ilk nesnenin alanlarını otomatik bulur.
+ */
+function DataSection({ title, data, color = 'slate' }) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (!data || data.length === 0) return null;
+
+  // İlk öğeden anahtar alanları çıkar (iç içe nesneler hariç)
+  const sampleItem = data[0];
+  const keys = Object.keys(sampleItem).filter((k) => {
+    const v = sampleItem[k];
+    return v !== null && v !== undefined && typeof v !== 'object';
+  });
+  // Nesne tipindeki alanları ayrı tut (genişletilebilir detay için)
+  const objectKeys = Object.keys(sampleItem).filter((k) => {
+    const v = sampleItem[k];
+    return v !== null && v !== undefined && typeof v === 'object';
+  });
+
+  const colorMap = {
+    blue: 'text-blue-400 border-blue-500/30',
+    green: 'text-green-400 border-green-500/30',
+    purple: 'text-purple-400 border-purple-500/30',
+    slate: 'text-slate-300 border-slate-600',
+  };
+
+  return (
+    <div className="mt-3">
+      <div className={`text-xs font-semibold ${colorMap[color]?.split(' ')[0] || 'text-slate-300'} mb-1.5 flex items-center gap-2`}>
+        {title} ({data.length})
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="text-[10px] bg-slate-700 hover:bg-slate-600 text-slate-400 px-1.5 py-0.5 rounded transition-colors"
+        >
+          {expanded ? 'Tabloyu Goster' : 'Ham JSON'}
+        </button>
+      </div>
+
+      {expanded ? (
+        <div className="bg-slate-900/60 rounded p-2 max-h-64 overflow-auto">
+          <pre className="text-xs text-slate-400 whitespace-pre-wrap break-all">
+            {JSON.stringify(data, null, 2)}
+          </pre>
+        </div>
+      ) : (
+        <div className="bg-slate-900/60 rounded overflow-hidden">
+          <div className="overflow-x-auto max-h-64">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-slate-700">
+                  <th className="px-2 py-1.5 text-left text-slate-500 font-medium">#</th>
+                  {keys.slice(0, 6).map((k) => (
+                    <th key={k} className="px-2 py-1.5 text-left text-slate-500 font-medium whitespace-nowrap">
+                      {k}
+                    </th>
+                  ))}
+                  {objectKeys.length > 0 && (
+                    <th className="px-2 py-1.5 text-left text-slate-500 font-medium">+detay</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {data.map((item, idx) => (
+                  <DataRow key={idx} item={item} idx={idx} keys={keys.slice(0, 6)} objectKeys={objectKeys} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DataRow({ item, idx, keys, objectKeys }) {
+  const [showDetail, setShowDetail] = useState(false);
+
+  return (
+    <>
+      <tr className="border-b border-slate-800 hover:bg-slate-800/50">
+        <td className="px-2 py-1.5 text-slate-600">{idx + 1}</td>
+        {keys.map((k) => (
+          <td key={k} className="px-2 py-1.5 text-slate-300 whitespace-nowrap max-w-[200px] truncate" title={String(item[k] ?? '')}>
+            {renderValue(item[k])}
+          </td>
+        ))}
+        {objectKeys.length > 0 && (
+          <td className="px-2 py-1.5">
+            <button
+              onClick={() => setShowDetail(!showDetail)}
+              className="text-blue-400 hover:text-blue-300 text-[10px]"
+            >
+              {showDetail ? 'Gizle' : 'Goster'}
+            </button>
+          </td>
+        )}
+      </tr>
+      {showDetail && (
+        <tr>
+          <td colSpan={keys.length + 2} className="px-2 py-2 bg-slate-900/80">
+            <pre className="text-[10px] text-slate-500 whitespace-pre-wrap break-all max-h-40 overflow-auto">
+              {JSON.stringify(
+                Object.fromEntries(objectKeys.map((k) => [k, item[k]])),
+                null,
+                2
+              )}
+            </pre>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function renderValue(val) {
+  if (val === null || val === undefined) return <span className="text-slate-600">-</span>;
+  if (typeof val === 'boolean') {
+    return val ? (
+      <span className="text-green-400">evet</span>
+    ) : (
+      <span className="text-slate-500">hayir</span>
+    );
+  }
+  return String(val);
+}
+
+function ProtectorTestDetails({ details }) {
+  return (
+    <div className="mt-3 space-y-1">
+      {details.apiVersion && (
+        <div className="text-xs text-slate-500">API v{details.apiVersion}</div>
+      )}
+
+      <DataSection title="Depolama Sistemleri (Nodes)" data={details.storages} color="blue" />
+      <DataSection title="Replikasyonlar (DataFlows)" data={details.replications} color="green" />
+      <DataSection title="RPO Durumu" data={details.rpoStatus} color="purple" />
+
+      {/* Hatalar */}
+      {details.errors?.length > 0 && (
+        <div className="mt-3">
+          <div className="text-xs font-semibold text-yellow-400 mb-1">
+            Erisilemeyen Endpoint'ler ({details.errors.length})
+          </div>
+          <div className="bg-slate-900/60 rounded p-2">
+            {details.errors.map((e, i) => (
+              <div key={i} className="text-xs text-yellow-400/80">
+                {e.endpoint}: {e.error}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Hicbir veri yoksa */}
+      {!details.storages?.length &&
+       !details.replications?.length &&
+       !details.rpoStatus?.length && (
+        <div className="text-xs text-yellow-400 mt-2">
+          Giris basarili ancak endpoint'lerden veri donmedi.
+        </div>
+      )}
+    </div>
+  );
+}
+
 // --- Step 1: API Configuration (Config Manager + Protector) ---
 function Step1ApiConfig({ onNext }) {
   const [host, setHost] = useState('');
@@ -461,80 +630,9 @@ function Step1ApiConfig({ onNext }) {
               <span className="text-sm">{protectorTestResult.message}</span>
             </div>
 
-            {/* Protector'dan gelen ham veri */}
+            {/* Protector'dan gelen veri */}
             {protectorTestResult.details && protectorTestResult.success && (
-              <div className="mt-3 space-y-3">
-                {protectorTestResult.details.apiVersion && (
-                  <div className="text-xs text-slate-500">API v{protectorTestResult.details.apiVersion}</div>
-                )}
-
-                {/* Depolama Sistemleri (Nodes) */}
-                {protectorTestResult.details.storages?.length > 0 && (
-                  <div>
-                    <div className="text-xs font-semibold text-slate-300 mb-1">
-                      Depolama Sistemleri ({protectorTestResult.details.storages.length})
-                    </div>
-                    <div className="bg-slate-900/60 rounded p-2 max-h-48 overflow-y-auto">
-                      <pre className="text-xs text-slate-400 whitespace-pre-wrap break-all">
-                        {JSON.stringify(protectorTestResult.details.storages, null, 2)}
-                      </pre>
-                    </div>
-                  </div>
-                )}
-
-                {/* Replikasyonlar (DataFlows) */}
-                {protectorTestResult.details.replications?.length > 0 && (
-                  <div>
-                    <div className="text-xs font-semibold text-slate-300 mb-1">
-                      Replikasyonlar ({protectorTestResult.details.replications.length})
-                    </div>
-                    <div className="bg-slate-900/60 rounded p-2 max-h-48 overflow-y-auto">
-                      <pre className="text-xs text-slate-400 whitespace-pre-wrap break-all">
-                        {JSON.stringify(protectorTestResult.details.replications, null, 2)}
-                      </pre>
-                    </div>
-                  </div>
-                )}
-
-                {/* RPO Durumu */}
-                {protectorTestResult.details.rpoStatus?.length > 0 && (
-                  <div>
-                    <div className="text-xs font-semibold text-slate-300 mb-1">
-                      RPO Durumu ({protectorTestResult.details.rpoStatus.length})
-                    </div>
-                    <div className="bg-slate-900/60 rounded p-2 max-h-48 overflow-y-auto">
-                      <pre className="text-xs text-slate-400 whitespace-pre-wrap break-all">
-                        {JSON.stringify(protectorTestResult.details.rpoStatus, null, 2)}
-                      </pre>
-                    </div>
-                  </div>
-                )}
-
-                {/* Hatalar */}
-                {protectorTestResult.details.errors?.length > 0 && (
-                  <div>
-                    <div className="text-xs font-semibold text-yellow-400 mb-1">
-                      Erisilemeyen Endpoint'ler ({protectorTestResult.details.errors.length})
-                    </div>
-                    <div className="bg-slate-900/60 rounded p-2">
-                      {protectorTestResult.details.errors.map((e, i) => (
-                        <div key={i} className="text-xs text-yellow-400/80">
-                          {e.endpoint}: {e.error}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Hicbir veri yoksa */}
-                {!protectorTestResult.details.storages?.length &&
-                 !protectorTestResult.details.replications?.length &&
-                 !protectorTestResult.details.rpoStatus?.length && (
-                  <div className="text-xs text-yellow-400">
-                    Giris basarili ancak endpoint'lerden veri donmedi.
-                  </div>
-                )}
-              </div>
+              <ProtectorTestDetails details={protectorTestResult.details} />
             )}
           </div>
         )}
