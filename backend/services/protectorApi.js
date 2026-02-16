@@ -223,10 +223,10 @@ async function testConnection(host, port, username, password, acceptSelfSigned =
       success: true,
       authenticated: true,
       apiVersion: resolvedApiVersion,
-      storagesFound: discovery.storages.length,
-      replicationsFound: discovery.replications.length,
-      rpoStatusCount: discovery.rpoStatus.length,
-      failedEndpoints: discovery.errors.map((e) => e.endpoint),
+      storages: discovery.storages,
+      replications: discovery.replications,
+      rpoStatus: discovery.rpoStatus,
+      errors: discovery.errors,
     };
   } catch (err) {
     return {

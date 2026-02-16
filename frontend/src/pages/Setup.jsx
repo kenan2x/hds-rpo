@@ -460,24 +460,79 @@ function Step1ApiConfig({ onNext }) {
               )}
               <span className="text-sm">{protectorTestResult.message}</span>
             </div>
+
+            {/* Protector'dan gelen ham veri */}
             {protectorTestResult.details && protectorTestResult.success && (
-              <div className="mt-2 text-xs text-slate-400 flex flex-wrap gap-3">
+              <div className="mt-3 space-y-3">
                 {protectorTestResult.details.apiVersion && (
-                  <span>API v{protectorTestResult.details.apiVersion}</span>
+                  <div className="text-xs text-slate-500">API v{protectorTestResult.details.apiVersion}</div>
                 )}
-                {protectorTestResult.details.storagesFound > 0 && (
-                  <span>{protectorTestResult.details.storagesFound} depolama sistemi</span>
+
+                {/* Depolama Sistemleri (Nodes) */}
+                {protectorTestResult.details.storages?.length > 0 && (
+                  <div>
+                    <div className="text-xs font-semibold text-slate-300 mb-1">
+                      Depolama Sistemleri ({protectorTestResult.details.storages.length})
+                    </div>
+                    <div className="bg-slate-900/60 rounded p-2 max-h-48 overflow-y-auto">
+                      <pre className="text-xs text-slate-400 whitespace-pre-wrap break-all">
+                        {JSON.stringify(protectorTestResult.details.storages, null, 2)}
+                      </pre>
+                    </div>
+                  </div>
                 )}
-                {protectorTestResult.details.replicationsFound > 0 && (
-                  <span>{protectorTestResult.details.replicationsFound} replikasyon</span>
+
+                {/* Replikasyonlar (DataFlows) */}
+                {protectorTestResult.details.replications?.length > 0 && (
+                  <div>
+                    <div className="text-xs font-semibold text-slate-300 mb-1">
+                      Replikasyonlar ({protectorTestResult.details.replications.length})
+                    </div>
+                    <div className="bg-slate-900/60 rounded p-2 max-h-48 overflow-y-auto">
+                      <pre className="text-xs text-slate-400 whitespace-pre-wrap break-all">
+                        {JSON.stringify(protectorTestResult.details.replications, null, 2)}
+                      </pre>
+                    </div>
+                  </div>
                 )}
-                {protectorTestResult.details.rpoStatusCount > 0 && (
-                  <span>{protectorTestResult.details.rpoStatusCount} RPO durumu</span>
+
+                {/* RPO Durumu */}
+                {protectorTestResult.details.rpoStatus?.length > 0 && (
+                  <div>
+                    <div className="text-xs font-semibold text-slate-300 mb-1">
+                      RPO Durumu ({protectorTestResult.details.rpoStatus.length})
+                    </div>
+                    <div className="bg-slate-900/60 rounded p-2 max-h-48 overflow-y-auto">
+                      <pre className="text-xs text-slate-400 whitespace-pre-wrap break-all">
+                        {JSON.stringify(protectorTestResult.details.rpoStatus, null, 2)}
+                      </pre>
+                    </div>
+                  </div>
                 )}
-                {protectorTestResult.details.failedEndpoints?.length > 0 && (
-                  <span className="text-yellow-400">
-                    Erisilemeyen: {protectorTestResult.details.failedEndpoints.join(', ')}
-                  </span>
+
+                {/* Hatalar */}
+                {protectorTestResult.details.errors?.length > 0 && (
+                  <div>
+                    <div className="text-xs font-semibold text-yellow-400 mb-1">
+                      Erisilemeyen Endpoint'ler ({protectorTestResult.details.errors.length})
+                    </div>
+                    <div className="bg-slate-900/60 rounded p-2">
+                      {protectorTestResult.details.errors.map((e, i) => (
+                        <div key={i} className="text-xs text-yellow-400/80">
+                          {e.endpoint}: {e.error}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Hicbir veri yoksa */}
+                {!protectorTestResult.details.storages?.length &&
+                 !protectorTestResult.details.replications?.length &&
+                 !protectorTestResult.details.rpoStatus?.length && (
+                  <div className="text-xs text-yellow-400">
+                    Giris basarili ancak endpoint'lerden veri donmedi.
+                  </div>
                 )}
               </div>
             )}
