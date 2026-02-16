@@ -2,37 +2,33 @@ const axios = require('axios');
 const https = require('https');
 
 /**
- * Hitachi Ops Center Protector / Common Services REST API Client
+ * Hitachi Ops Center Protector REST API Client
  *
- * IMPORTANT: Authentication goes through Ops Center Common Services,
- * which runs on port 443 by default — NOT on the Protector port (20964).
+ * Based on: Ops Center Protector REST API User Guide (7.10.x)
+ * https://docs.hitachivantara.com/r/en-us/ops-center-protector/7.10.x/mk-99prt005
  *
  * Auth flow:
- *   POST https://{host}:443/portal/auth/v1/providers/builtin/token
- *   Header: Authorization: Basic {base64(username:password)}
- *   Response: { "access_token": "...", ... }
+ *   POST /API/<version>/master/UIController/services/Users/actions/login/invoke
+ *   Body (form-urlencoded): username=<user>&password=<pass>&space=master
+ *   Response: Set-Cookie header with session cookie
  *
- * After authentication, Protector API calls use the Bearer token
- * on the Protector port (default 20964).
+ * All subsequent requests include the session cookie.
+ * Session is valid for 2 hours of inactivity.
  *
- * The bearer token expires 5 minutes after the last API access.
+ * Base URL: https://<host>:<port>/API/<version>/
+ * Default port: 443 (can be changed during installation, e.g. 20964)
  */
 
-const TOKEN_REFRESH_MS = 4 * 60 * 1000; // Refresh 4 minutes (before 5-min expiry)
-const AUTH_PATH = '/portal/auth/v1/providers/builtin/token';
+const SESSION_TIMEOUT_MS = 110 * 60 * 1000; // Refresh before 2-hour expiry
+const API_VERSIONS = ['7.10', '7.1'];       // Try these API version prefixes
 
-// Common Services may run on different ports depending on installation type:
-//   443  — standalone / installer default
-//   8443 — OVA appliance default
-// The Protector port (20964) is also tried as a fallback.
-const COMMON_SERVICES_PORTS = [443, 8443];
-
-// In-memory token cache
-let cachedToken = null;
-let tokenExpiresAt = 0;
+// In-memory session cache
+let cachedCookie = null;
+let sessionExpiresAt = 0;
+let resolvedApiVersion = null;
 
 /**
- * Creates an axios client for a given host:port.
+ * Creates an axios client for the Protector API.
  */
 function createClient(host, port, acceptSelfSigned = false) {
   const baseURL = `https://${host}:${port}`;
@@ -40,147 +36,153 @@ function createClient(host, port, acceptSelfSigned = false) {
   return axios.create({
     baseURL,
     timeout: 30000,
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
     httpsAgent: new https.Agent({
       rejectUnauthorized: !acceptSelfSigned,
     }),
+    // Do not follow redirects automatically for cookie handling
+    maxRedirects: 5,
   });
 }
 
 /**
- * Authenticates with Ops Center Common Services to get a Bearer token.
- *
- * Common Services typically runs on port 443 (default), separate from
- * the Protector application port (20964). This function tries:
- *   1. Port 443 (Common Services default)
- *   2. The configured Protector port (as fallback, in case Common Services
- *      is reverse-proxied through the same port)
- *
- * @param {string} host
- * @param {number} protectorPort - Protector port (default 20964)
- * @param {string} username
- * @param {string} password
- * @param {boolean} [acceptSelfSigned=false]
- * @returns {Promise<string>} Bearer access token
+ * Detects the correct API version by calling the ProductInformation endpoint
+ * (which does not require authentication).
  */
-async function authenticate(host, protectorPort, username, password, acceptSelfSigned = false) {
-  const basicAuth = Buffer.from(`${username}:${password}`).toString('base64');
+async function detectApiVersion(host, port, acceptSelfSigned = false) {
+  if (resolvedApiVersion) return resolvedApiVersion;
 
-  // Ports to try for Common Services auth (443, 8443, then the Protector port)
-  const portsToTry = [...COMMON_SERVICES_PORTS];
-  if (!portsToTry.includes(protectorPort)) {
-    portsToTry.push(protectorPort);
-  }
+  const client = createClient(host, port, acceptSelfSigned);
 
-  const errors = [];
-
-  for (const port of portsToTry) {
-    const client = createClient(host, port, acceptSelfSigned);
-
+  for (const version of API_VERSIONS) {
     try {
-      console.log(`[protectorApi] Trying Common Services auth on ${host}:${port}${AUTH_PATH}...`);
+      const url = `/API/${version}/master/NodeManager/objects/ProductInformation/`;
+      console.log(`[protectorApi] Trying API version ${version}...`);
+      const response = await client.get(url);
 
-      const response = await client.post(
-        AUTH_PATH,
-        {},
-        { headers: { Authorization: `Basic ${basicAuth}` } }
-      );
-
-      // Extract token from response
-      const token =
-        response.data?.access_token ||
-        response.data?.token ||
-        response.data?.sessionId;
-
-      if (token) {
-        cachedToken = token;
-        tokenExpiresAt = Date.now() + TOKEN_REFRESH_MS;
-        console.log(`[protectorApi] Authenticated via Common Services on port ${port}.`);
-        return token;
+      if (response.data?.masterVersion || response.data?.id) {
+        resolvedApiVersion = version;
+        console.log(
+          `[protectorApi] Detected API version: ${version} ` +
+          `(master: ${response.data.masterVersion || 'unknown'})`
+        );
+        return version;
       }
-
-      // 200 but no token — log response for debugging
-      console.log(
-        `[protectorApi] Port ${port}: 200 OK but no token found. ` +
-        `Response keys: ${Object.keys(response.data || {}).join(', ')}`
-      );
-      errors.push({
-        port,
-        message: `200 OK ancak token bulunamadi (yanit anahtarlari: ${Object.keys(response.data || {}).join(', ')})`,
-      });
     } catch (err) {
-      const status = err.response?.status;
-      const code = err.code;
-
-      // SSL certificate errors — fail immediately with clear message
-      const sslErrors = [
-        'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
-        'DEPTH_ZERO_SELF_SIGNED_CERT',
-        'SELF_SIGNED_CERT_IN_CHAIN',
-        'CERT_HAS_EXPIRED',
-        'ERR_TLS_CERT_ALTNAME_INVALID',
-      ];
-      if (sslErrors.includes(code)) {
-        throw new Error(
-          `SSL sertifika hatasi (port ${port}): ${code}. ` +
-          `"Kendinden Imzali Sertifika Kabul Et" secenegini etkinlestirin.`
-        );
-      }
-
-      // 401/403 = endpoint exists but credentials are wrong — stop trying
-      if (status === 401 || status === 403) {
-        throw new Error(
-          `Kimlik dogrulama basarisiz (port ${port}). ` +
-          `Kullanici adi ve sifreyi kontrol edin. (HTTP ${status})`
-        );
-      }
-
-      const detail = status
-        ? `HTTP ${status}`
-        : code || err.message;
-
-      console.log(`[protectorApi] Port ${port}: ${detail}`);
-      errors.push({ port, message: detail });
+      // Try next version
     }
   }
 
-  // Build a helpful error message
-  const portList = errors
-    .map((e) => `  - Port ${e.port}: ${e.message}`)
-    .join('\n');
-
-  throw new Error(
-    `Common Services kimlik dogrulama basarisiz.\n` +
-    `Auth endpoint: ${AUTH_PATH}\n` +
-    `Denenen portlar:\n${portList}\n\n` +
-    `Not: Common Services varsayilan portu 443 (installer) veya 8443 (OVA appliance) olabilir. ` +
-    `Common Services'in bu sunucuda calistigindan emin olun.`
-  );
+  // Default to first version if detection fails
+  console.warn('[protectorApi] Could not detect API version, defaulting to 7.1');
+  resolvedApiVersion = '7.1';
+  return resolvedApiVersion;
 }
 
 /**
- * Gets a valid token, refreshing if needed.
+ * Authenticates with Ops Center Protector to create a session.
+ *
+ * Login endpoint:
+ *   POST /API/<version>/master/UIController/services/Users/actions/login/invoke
+ *   Body: username=<user>&password=<pass>&space=master
+ *   Response: Set-Cookie header
+ *
+ * @param {string} host
+ * @param {number} port - Protector port (default 443 or custom e.g. 20964)
+ * @param {string} username
+ * @param {string} password
+ * @param {boolean} [acceptSelfSigned=false]
+ * @returns {Promise<string>} Session cookie string
  */
-async function getToken(host, port, username, password, acceptSelfSigned) {
-  if (cachedToken && Date.now() < tokenExpiresAt) {
-    return cachedToken;
+async function authenticate(host, port, username, password, acceptSelfSigned = false) {
+  const apiVersion = await detectApiVersion(host, port, acceptSelfSigned);
+  const client = createClient(host, port, acceptSelfSigned);
+
+  const loginUrl = `/API/${apiVersion}/master/UIController/services/Users/actions/login/invoke`;
+
+  console.log(`[protectorApi] Logging in to ${host}:${port}${loginUrl}...`);
+
+  try {
+    const response = await client.post(
+      loginUrl,
+      `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&space=master`,
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+      }
+    );
+
+    // Extract session cookie from Set-Cookie header
+    const setCookies = response.headers['set-cookie'];
+    if (!setCookies || setCookies.length === 0) {
+      throw new Error('Login basarili ancak session cookie donmedi.');
+    }
+
+    // Combine all cookies into a single cookie string
+    const cookieString = setCookies
+      .map((c) => c.split(';')[0])
+      .join('; ');
+
+    cachedCookie = cookieString;
+    sessionExpiresAt = Date.now() + SESSION_TIMEOUT_MS;
+
+    console.log(`[protectorApi] Login basarili (${host}:${port}).`);
+    return cookieString;
+  } catch (err) {
+    // SSL certificate errors
+    const sslErrors = [
+      'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+      'DEPTH_ZERO_SELF_SIGNED_CERT',
+      'SELF_SIGNED_CERT_IN_CHAIN',
+    ];
+    if (sslErrors.includes(err.code)) {
+      throw new Error(
+        `SSL sertifika hatasi: ${err.code}. ` +
+        `"Kendinden Imzali Sertifika Kabul Et" secenegini etkinlestirin.`
+      );
+    }
+
+    if (err.response?.status === 401 || err.response?.status === 403) {
+      throw new Error(
+        `Kimlik dogrulama basarisiz. Kullanici adi ve sifreyi kontrol edin. (HTTP ${err.response.status})`
+      );
+    }
+
+    if (err.response?.status === 404) {
+      throw new Error(
+        `Login endpoint bulunamadi (404). Protector API versiyonu kontrol edin. ` +
+        `Denenen: ${loginUrl}`
+      );
+    }
+
+    const detail = err.response?.status
+      ? `HTTP ${err.response.status}`
+      : err.code || err.message;
+
+    throw new Error(`Protector login basarisiz: ${detail}`);
+  }
+}
+
+/**
+ * Gets a valid session cookie, re-authenticating if needed.
+ */
+async function getSession(host, port, username, password, acceptSelfSigned) {
+  if (cachedCookie && Date.now() < sessionExpiresAt) {
+    return cachedCookie;
   }
   return authenticate(host, port, username, password, acceptSelfSigned);
 }
 
 /**
  * Makes an authenticated GET request to the Protector API.
- * Uses the Protector port (not the Common Services auth port).
+ * Uses session cookie (not Bearer token).
  */
-async function authenticatedGet(host, port, token, path, acceptSelfSigned = false) {
+async function authenticatedGet(host, port, cookie, path, acceptSelfSigned = false) {
   const client = createClient(host, port, acceptSelfSigned);
 
   const response = await client.get(path, {
     headers: {
-      Authorization: `Bearer ${token}`,
+      Cookie: cookie,
     },
   });
 
@@ -188,84 +190,99 @@ async function authenticatedGet(host, port, token, path, acceptSelfSigned = fals
 }
 
 /**
- * Discovers replication-related data from Ops Center Protector/Administrator.
- * Tries known API endpoint patterns to find replication data.
+ * Discovers replication-related data from Ops Center Protector.
+ *
+ * Key endpoints:
+ *   - Nodes: /API/<v>/master/NodeManager/objects/Nodes
+ *   - DataFlows: /API/<v>/master/DataFlowHandler/objects/DataFlows
+ *   - RPO Report: /API/<v>/master/ReportHandler/objects/RPOS/Current/collections/entries
  *
  * @param {string} host
- * @param {number} port - Protector port (for API calls after auth)
- * @param {string} token - Bearer token
+ * @param {number} port
+ * @param {string} cookie - Session cookie
  * @param {boolean} [acceptSelfSigned=false]
- * @returns {Promise<Object>} Discovery results with nodes and pairs
+ * @returns {Promise<Object>} Discovery results
  */
-async function discoverReplication(host, port, token, acceptSelfSigned = false) {
+async function discoverReplication(host, port, cookie, acceptSelfSigned = false) {
+  const apiVersion = resolvedApiVersion || '7.1';
+
   const results = {
     nodes: [],
-    pairs: [],
-    copyGroups: [],
+    dataFlows: [],
+    rpoReport: [],
     discoveryMethod: null,
     errors: [],
   };
 
-  // Protector/Administrator API endpoint candidates
-  const endpoints = [
-    // Administrator endpoints
-    { path: '/v1/objects/remote-replications', category: 'copyGroups' },
-    { path: '/v1/objects/remote-storage-systems', category: 'copyGroups' },
-    { path: '/v1/objects/replication-groups', category: 'copyGroups' },
-    // Protector node endpoints
-    { path: '/porcelain/v2/nodes', category: 'nodes' },
-    { path: '/Protector/v1/objects/nodes', category: 'nodes' },
-    // Pair endpoints
-    { path: '/v1/objects/volume-pairs', category: 'pairs' },
-    { path: '/v1/objects/remote-copy-pairs', category: 'pairs' },
-    { path: '/porcelain/v2/remoteCopyPairs', category: 'pairs' },
-  ];
-
-  for (const ep of endpoints) {
-    try {
-      const data = await authenticatedGet(host, port, token, ep.path, acceptSelfSigned);
-      const items = data?.data || data?.items || data?.nodes || data?.pairs || data || [];
-
-      if (Array.isArray(items) && items.length > 0) {
-        console.log(`[protectorApi] Found ${items.length} item(s) at ${ep.path}`);
-        results[ep.category].push(...items);
-        if (!results.discoveryMethod) {
-          results.discoveryMethod = `${ep.category}:${ep.path}`;
-        }
-      }
-    } catch (err) {
-      const status = err.response?.status || err.code || 'error';
-      results.errors.push({ endpoint: ep.path, error: `${status}` });
+  // 1. Get Nodes
+  try {
+    const nodesUrl = `/API/${apiVersion}/master/NodeManager/objects/Nodes`;
+    const data = await authenticatedGet(host, port, cookie, nodesUrl, acceptSelfSigned);
+    const nodes = data?.node || data?.nodes || [];
+    if (Array.isArray(nodes) && nodes.length > 0) {
+      results.nodes = nodes;
+      results.discoveryMethod = 'protector:nodes';
+      console.log(`[protectorApi] Found ${nodes.length} node(s).`);
     }
+  } catch (err) {
+    results.errors.push({ endpoint: 'Nodes', error: err.message });
+  }
+
+  // 2. Get DataFlows
+  try {
+    const dfUrl = `/API/${apiVersion}/master/DataFlowHandler/objects/DataFlows`;
+    const data = await authenticatedGet(host, port, cookie, dfUrl, acceptSelfSigned);
+    const flows = data?.dataFlow || data?.dataFlows || [];
+    if (Array.isArray(flows) && flows.length > 0) {
+      results.dataFlows = flows;
+      if (!results.discoveryMethod) results.discoveryMethod = 'protector:dataflows';
+      console.log(`[protectorApi] Found ${flows.length} data flow(s).`);
+    }
+  } catch (err) {
+    results.errors.push({ endpoint: 'DataFlows', error: err.message });
+  }
+
+  // 3. Get RPO Report
+  try {
+    const rpoUrl = `/API/${apiVersion}/master/ReportHandler/objects/RPOS/Current/collections/entries`;
+    const data = await authenticatedGet(host, port, cookie, rpoUrl, acceptSelfSigned);
+    const entries = data?.rPOReportEntry || data?.entries || [];
+    if (Array.isArray(entries) && entries.length > 0) {
+      results.rpoReport = entries;
+      if (!results.discoveryMethod) results.discoveryMethod = 'protector:rpo';
+      console.log(`[protectorApi] Found ${entries.length} RPO report entry(ies).`);
+    }
+  } catch (err) {
+    results.errors.push({ endpoint: 'RPO Report', error: err.message });
   }
 
   if (!results.discoveryMethod) {
-    console.warn('[protectorApi] No replication data found from any endpoint.');
+    console.warn('[protectorApi] No data found from Protector API endpoints.');
   }
 
   return results;
 }
 
 /**
- * Tests the Protector/Common Services connection by authenticating
- * and then probing for available discovery endpoints.
+ * Tests the Protector connection by logging in and querying endpoints.
  *
  * @returns {Promise<Object>} Connection test result
  */
 async function testConnection(host, port, username, password, acceptSelfSigned = false) {
   try {
-    const token = await authenticate(host, port, username, password, acceptSelfSigned);
+    const cookie = await authenticate(host, port, username, password, acceptSelfSigned);
 
-    // Try to discover what endpoints are available on the Protector port
-    const discovery = await discoverReplication(host, port, token, acceptSelfSigned);
+    // Try to discover what data is available
+    const discovery = await discoverReplication(host, port, cookie, acceptSelfSigned);
 
     return {
       success: true,
       authenticated: true,
+      apiVersion: resolvedApiVersion,
       discoveryMethod: discovery.discoveryMethod,
       nodesFound: discovery.nodes.length,
-      pairsFound: discovery.pairs.length,
-      copyGroupsFound: discovery.copyGroups.length,
+      dataFlowsFound: discovery.dataFlows.length,
+      rpoEntriesFound: discovery.rpoReport.length,
       failedEndpoints: discovery.errors.map((e) => e.endpoint),
     };
   } catch (err) {
@@ -279,18 +296,42 @@ async function testConnection(host, port, username, password, acceptSelfSigned =
 }
 
 /**
- * Clears the cached token.
+ * Logs out and clears the session.
  */
-function clearTokenCache() {
-  cachedToken = null;
-  tokenExpiresAt = 0;
+async function logout(host, port, acceptSelfSigned = false) {
+  if (!cachedCookie || !resolvedApiVersion) return;
+
+  try {
+    const client = createClient(host, port, acceptSelfSigned);
+    await client.post(
+      `/API/${resolvedApiVersion}/master/UIController/services/Users/actions/logout/invoke`,
+      {},
+      { headers: { Cookie: cachedCookie } }
+    );
+  } catch {
+    // Ignore logout errors
+  }
+
+  cachedCookie = null;
+  sessionExpiresAt = 0;
+}
+
+/**
+ * Clears the cached session without logout.
+ */
+function clearSessionCache() {
+  cachedCookie = null;
+  sessionExpiresAt = 0;
+  resolvedApiVersion = null;
 }
 
 module.exports = {
   authenticate,
-  getToken,
+  getSession,
   authenticatedGet,
+  detectApiVersion,
   discoverReplication,
   testConnection,
-  clearTokenCache,
+  logout,
+  clearSessionCache,
 };

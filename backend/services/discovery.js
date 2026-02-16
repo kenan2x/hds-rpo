@@ -418,7 +418,7 @@ async function discoverViaProtector() {
   try {
     console.log('[discovery] Attempting Protector-based discovery...');
 
-    const token = await protectorApi.authenticate(
+    const cookie = await protectorApi.authenticate(
       apiConfig.protectorHost,
       apiConfig.protectorPort,
       protectorCreds.username,
@@ -429,14 +429,14 @@ async function discoverViaProtector() {
     const results = await protectorApi.discoverReplication(
       apiConfig.protectorHost,
       apiConfig.protectorPort,
-      token,
+      cookie,
       apiConfig.acceptSelfSigned
     );
 
     console.log(
       `[discovery] Protector discovery: method=${results.discoveryMethod}, ` +
-      `nodes=${results.nodes.length}, pairs=${results.pairs.length}, ` +
-      `copyGroups=${results.copyGroups.length}`
+      `nodes=${results.nodes.length}, dataFlows=${results.dataFlows.length}, ` +
+      `rpoReport=${results.rpoReport.length}`
     );
 
     return results;
@@ -579,8 +579,8 @@ async function runFullDiscovery() {
     results.protectorResults = {
       discoveryMethod: protectorData.discoveryMethod,
       nodesFound: protectorData.nodes.length,
-      pairsFound: protectorData.pairs.length,
-      copyGroupsFound: protectorData.copyGroups.length,
+      dataFlowsFound: protectorData.dataFlows.length,
+      rpoEntriesFound: protectorData.rpoReport.length,
     };
   }
 
